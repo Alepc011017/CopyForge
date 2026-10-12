@@ -1,0 +1,14 @@
+[package]
+name = "copyforge-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio       = { workspace = true, features = ["fs", "io-util", "rt-multi-thread", "macros", "sync"] }
+tokio-util  = { workspace = true, features = ["rt"] }
+walkdir     = { workspace = true }
+blake3      = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+globset     = { workspace = true }

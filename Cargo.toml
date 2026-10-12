@@ -1,0 +1,16 @@
+[workspace]
+members = ["crates/core", "apps/cli"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+tokio      = { version = "1", features = ["fs", "io-util", "rt-multi-thread", "macros", "sync"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+walkdir    = "2"
+blake3     = "1"
+thiserror  = "1"
+tracing    = "0.1"
+globset    = "0.4"
