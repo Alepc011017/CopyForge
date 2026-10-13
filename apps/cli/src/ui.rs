@@ -145,5 +145,9 @@ fn print_report(r: &Report) {
             println!("    … y {} más", r.errors.len() - 10);
         }
     }
+    if r.errors_truncated > 0 {
+        println!("  {} errores adicionales omitidos (total: {})",
+                 r.errors_truncated, r.errors.len() + r.errors_truncated);
+    }
     println!("──────────────────────────────────────────");
 }

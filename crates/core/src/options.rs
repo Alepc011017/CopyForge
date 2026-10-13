@@ -18,6 +18,10 @@ pub struct CopyOptions {
     /// Default `File` (cambio respecto al comportamiento anterior,
     /// que equivalía a `None`).
     pub durability: DurabilityPolicy,
+    /// P0.7: cap de `Report.errors`. Se preservan los primeros `max_errors`
+    /// para diagnóstico; `errors_truncated` indica cuántos se omitieron.
+    /// Aplica al Vec completo, no por origen. Default 1000.
+    pub max_errors: usize,
 }
 
 impl Default for CopyOptions {
@@ -34,6 +38,7 @@ impl Default for CopyOptions {
             allow_symlink_escape: false,
             max_escape_bytes: None,
             durability: DurabilityPolicy::default(),
+            max_errors: 1000,
         }
     }
 }

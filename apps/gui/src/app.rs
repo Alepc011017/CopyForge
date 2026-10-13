@@ -346,6 +346,13 @@ impl eframe::App for CopyForgeApp {
                             });
                         });
                     }
+                    if r.errors_truncated > 0 {
+                        ui.small(format!(
+                            "{} errores adicionales omitidos (total: {})",
+                            r.errors_truncated,
+                            r.errors.len() + r.errors_truncated
+                        ));
+                    }
                     if ui.button("Nueva copia").clicked() {
                         self.state = None;
                         self.status = String::from("Listo");

@@ -102,7 +102,13 @@ impl CopyEngine {
                     let msg = error.to_string();
                     let _ = self.events_tx.send(CopyEvent::FileFailed { path: path.clone(), error: msg.clone() }).await;
                     report.files_failed += 1;
-                    report.errors.push((path, msg));
+                    // P0.7: cap del Vec para no agotar memoria con millones
+                    // de fallos; el resto solo incrementa el contador.
+                    if report.errors.len() < self.options.max_errors {
+                        report.errors.push((path, msg));
+                    } else {
+                        report.errors_truncated += 1;
+                    }
                     if !self.options.continue_on_error {
                         warn!("cancelando por error (continue_on_error=false)");
                         self.cancel.cancel();
@@ -606,5 +612,43 @@ mod tests {
         let (copied, content) = run_copy_with_durability(DurabilityPolicy::File).await;
         assert_eq!(copied, 1);
         assert_eq!(content, b"hello-durability");
+    }
+
+    async fn run_failing_plan(max_errors: usize) -> Report {
+        let opts = CopyOptions {
+            max_errors,
+            ..CopyOptions::default()
+        };
+        let tasks: Vec<CopyTask> = (0..5)
+            .map(|i| CopyTask {
+                src: PathBuf::from(format!("/nonexistent-cf-src-{i}")),
+                dst: PathBuf::from(format!("/tmp/nonexistent-cf-dst-{i}")),
+                size: 0,
+                kind: TaskKind::File,
+            })
+            .collect();
+        let plan = CopyPlan {
+            tasks,
+            options: opts.clone(),
+            total_bytes: 0,
+        };
+        let (tx, _rx) = mpsc::channel(64);
+        CopyEngine::new(opts, tx).run(plan).await
+    }
+
+    #[tokio::test]
+    async fn errors_capped_at_max_errors() {
+        let report = run_failing_plan(2).await;
+        assert_eq!(report.files_failed, 5);
+        assert_eq!(report.errors.len(), 2);
+        assert_eq!(report.errors_truncated, 3);
+    }
+
+    #[tokio::test]
+    async fn errors_not_capped_below_limit() {
+        let report = run_failing_plan(1000).await;
+        assert_eq!(report.files_failed, 5);
+        assert_eq!(report.errors.len(), 5);
+        assert_eq!(report.errors_truncated, 0);
     }
 }

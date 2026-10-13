@@ -123,6 +123,7 @@ impl Args {
             allow_symlink_escape: self.allow_symlink_escape,
             max_escape_bytes: None,
             durability: self.durability.into(),
+            max_errors: 1000,
         }
     }
 }

@@ -26,5 +26,7 @@ pub struct Report {
     pub symlinks_created: u64,
     pub symlinked: Vec<(PathBuf, PathBuf)>,
     pub errors: Vec<(PathBuf, String)>,
+    /// Errores omitidos de `errors` por el cap `max_errors` (P0.7).
+    pub errors_truncated: usize,
     pub duration: Duration,
 }
