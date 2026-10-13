@@ -1,1 +1,8 @@
-/target
+node_modules/
+.env
+venv/
+__pycache__/
+dist/
+build/
+*.exe
+*.log
