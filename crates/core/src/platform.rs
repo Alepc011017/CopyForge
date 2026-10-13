@@ -276,7 +276,13 @@ pub fn sync_dir(dir: &Path) -> io::Result<()> {
     let handle = unsafe {
         CreateFileW(
             PCWSTR(dir_w.as_ptr()),
-            GENERIC_READ,
+            // windows 0.61: GENERIC_ACCESS_RIGHTS.0 necesario (CreateFileW
+            // espera u32 plano en dwdesiredaccess, no el newtype).
+            GENERIC_READ.0,
+            // windows 0.61: FILE_SHARE_MODE | FILE_SHARE_MODE = FILE_SHARE_MODE,
+            // coincide con dwsharemode. OPEN_EXISTING ya es
+            // FILE_CREATION_DISPOSITION y FILE_FLAG_BACKUP_SEMANTICS ya es
+            // FILE_FLAGS_AND_ATTRIBUTES: sin conversión.
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             None,
             OPEN_EXISTING,
