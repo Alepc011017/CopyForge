@@ -17,4 +17,6 @@ globset     = { workspace = true }
 tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+# Win32_Security lo exige CreateFileW (parámetro SECURITY_ATTRIBUTES);
+# verificado por E0432 en CI windows-latest.
+windows = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security"] }

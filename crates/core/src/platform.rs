@@ -247,6 +247,14 @@ pub fn sync_dir(dir: &Path) -> io::Result<()> {
 /// handle siempre (`CloseHandle`).
 /// verificado por CI windows-latest, ver .github/workflows/ci.yml
 ///
+/// Features `windows` usadas, verificadas símbolo por símbolo contra
+/// `windows 0.61.3` (+ CI): `Win32_Storage_FileSystem` (`CreateFileW`,
+/// `FlushFileBuffers`, `FILE_FLAG_BACKUP_SEMANTICS`, `FILE_SHARE_READ/WRITE`,
+/// `OPEN_EXISTING`); `Win32_Foundation` (`CloseHandle`, `GENERIC_READ`);
+/// `Win32_Security` (SOLO lo exige `CreateFileW` por su parámetro
+/// `SECURITY_ATTRIBUTES` — E0432 real en CI si falta); núcleo sin feature
+/// (`PCWSTR`, `HRESULT::from_win32`, `Error::code`).
+///
 /// Sin `unwrap`/`expect`.
 #[cfg(windows)]
 pub fn sync_dir(dir: &Path) -> io::Result<()> {
