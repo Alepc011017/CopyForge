@@ -476,6 +476,9 @@ mod tests {
         assert!(validate_effective_paths(&src, &dst).is_ok());
     }
 
+    // Crear symlinks en Windows exige privilegios ausentes en runners
+    // limpios: se compila en ambos SO pero solo se ejecuta en Unix.
+    #[cfg_attr(windows, ignore)]
     #[test]
     fn build_plan_accepts_broken_symlink_src() {
         let tmp = tempfile::tempdir().unwrap();
@@ -501,6 +504,7 @@ mod tests {
         (tmp, src, link, dst)
     }
 
+    #[cfg_attr(windows, ignore)]
     #[test]
     fn escape_symlink_outside_is_rejected_by_default() {
         let (_tmp, src, link, dst) = escape_fixture();
@@ -521,6 +525,7 @@ mod tests {
         }
     }
 
+    #[cfg_attr(windows, ignore)]
     #[test]
     fn escape_symlink_allowed_with_opt_in() {
         let (_tmp, src, _link, dst) = escape_fixture();
@@ -533,6 +538,7 @@ mod tests {
         assert!(plan.tasks.iter().any(|t| t.src.ends_with("externo.txt")));
     }
 
+    #[cfg_attr(windows, ignore)]
     #[test]
     fn escape_cap_stops_big_external_tree() {
         let (_tmp, src, _link, dst) = escape_fixture();

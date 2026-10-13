@@ -24,7 +24,7 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   windows:
-    name: Windows · solo compilación
+    name: Windows · tests
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -33,7 +33,10 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
         with:
           toolchain: stable
-      # Solo verificar que compila (incluye el código cfg(windows)
-      # de platform.rs, que no se puede comprobar en Linux).
-      - name: Check workspace
-        run: cargo check --workspace
+      # Tests completos: aquí se verifica platform::atomic_replace
+      # (ReplaceFileW/MoveFileExW) y el resto del motor en Windows.
+      # Los tests que crean symlinks van con #[cfg_attr(windows, ignore)]
+      # porque en Windows exigen privilegios ausentes en runners limpios
+      # (compilan en ambos, solo se ejecutan en Unix).
+      - name: Tests workspace
+        run: cargo test --workspace

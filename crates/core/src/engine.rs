@@ -405,8 +405,8 @@ async fn copy_file(
         }
     }
 
-    // --- rename atómico ---
-    if let Err(e) = atomic_replace(&tmp_path, &task.dst).await {
+    // --- rename atómico (P1.1b: vía platform::atomic_replace) ---
+    if let Err(e) = platform::atomic_replace(&tmp_path, &task.dst) {
         let _ = fs::remove_file(&tmp_path).await;
         return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
     }
@@ -437,12 +437,6 @@ fn tmp_path_for(dst: &Path) -> PathBuf {
     let mut s = dst.as_os_str().to_owned();
     s.push(".copyforge.tmp");
     PathBuf::from(s)
-}
-
-#[cfg(unix)]
-async fn atomic_replace(tmp: &Path, dst: &Path) -> std::io::Result<()> {
-    // En Unix, rename sobreescribe atómicamente
-    fs::rename(tmp, dst).await
 }
 
 /// Fase pre-rename de [`DurabilityPolicy`]: asegura los datos del temporal.
@@ -497,19 +491,6 @@ async fn sync_parent_dir(dst: &Path, _warn_once: &Once) -> Result<(), CopyError>
         Ok(())
     }
 }
-#[cfg(windows)]
-async fn atomic_replace(tmp: &Path, dst: &Path) -> std::io::Result<()> {
-    // En Windows, rename falla si el destino existe → intentar borrar primero.
-    // (Para máxima robustez: ReplaceFileW vía crate `windows`)
-    match fs::rename(tmp, dst).await {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            let _ = fs::remove_file(dst).await;
-            fs::rename(tmp, dst).await
-        }
-    }
-}
-
 async fn verify_hash(src: &Path, tmp: &Path, dst_for_error: &Path) -> Result<(), CopyError> {
     let s = hash_file(src).await.map_err(|e| CopyError::Io { path: src.to_path_buf(), source: e })?;
     let d = hash_file(tmp).await.map_err(|e| CopyError::Io { path: tmp.to_path_buf(), source: e })?;
