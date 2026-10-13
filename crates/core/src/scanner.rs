@@ -51,12 +51,18 @@ pub fn build_effective_dest(src: &Path, dst: &Path) -> std::io::Result<PathBuf> 
     }
 }
 
-/// Valida que la pareja `(src, dst)` no sea autodestructiva.
+/// Valida que la pareja `(src, dst)` cruda no sea autodestructiva.
 ///
 /// - `src == dst` → `InvalidDestination("src and dst are the same")`.
 /// - `dst` dentro de `src` → `InvalidDestination("dst is inside src")`
 ///   (recursión explosiva: el destino crecería mientras se copia).
 /// - `src` dentro de `dst` es **válido** (no error).
+///
+/// Diferencia con [`validate_effective_paths`]: esta función solo ve las
+/// rutas tal como las pasa el usuario (defensa temprana, antes de tocar IO).
+/// El caso `src=/a/b, dst=/a` pasa aquí pero resuelve a un destino efectivo
+/// interior a `src`; ese hueco lo cierra `validate_effective_paths`, que se
+/// llama dentro de [`build_plan`] tras [`build_effective_dest`].
 ///
 /// Usa `canonicalize` cuando los paths existen (resuelve symlinks, `.`/`..`
 /// y rutas largas de Windows). Si un path no existe, canonaliza el ancestro
@@ -73,6 +79,38 @@ pub fn validate_paths(src: &Path, dst: &Path) -> Result<(), CopyError> {
     if dst_c.starts_with(&src_c) {
         return Err(CopyError::InvalidDestination {
             reason: "dst is inside src".into(),
+        });
+    }
+    Ok(())
+}
+
+/// Valida el destino **efectivo** tras [`build_effective_dest`].
+///
+/// Cierra el hueco que `validate_paths` no ve: `src=/a/b, dst=/a` pasa la
+/// validación cruda (`/a` no está dentro de `/a/b`), pero el destino efectivo
+/// es `/a/b` — igual a `src` — y sin este cheque el plan copiaría el árbol
+/// sobre sí mismo en cada pasada (recursión exponencial).
+///
+/// - efectivo `== src` → `InvalidDestination("effective destination equals src")`.
+/// - efectivo dentro de `src` → `InvalidDestination("effective destination is inside src")`.
+///
+/// Se llama dentro de [`build_plan`] justo después de resolver el destino
+/// efectivo y antes de generar tareas. Sin `unwrap`/`expect`.
+pub fn validate_effective_paths(src: &Path, dst: &Path) -> Result<(), CopyError> {
+    let effective = build_effective_dest(src, dst).map_err(|e| CopyError::Io {
+        path: src.to_path_buf(),
+        source: e,
+    })?;
+    let src_c = canonicalize_lossy(src);
+    let eff_c = canonicalize_lossy(&effective);
+    if eff_c == src_c {
+        return Err(CopyError::InvalidDestination {
+            reason: "effective destination equals src".into(),
+        });
+    }
+    if eff_c.starts_with(&src_c) {
+        return Err(CopyError::InvalidDestination {
+            reason: "effective destination is inside src".into(),
         });
     }
     Ok(())
@@ -121,6 +159,11 @@ pub fn build_plan(src: &Path, dst: &Path, options: &CopyOptions) -> Result<CopyP
         path: src.to_path_buf(),
         source: e,
     })?;
+
+    // P0.5-fix: el destino efectivo puede caer dentro de src aunque el
+    // dst crudo no (p. ej. src=/a/b, dst=/a → efectivo /a/b). Validar
+    // antes de generar tareas.
+    validate_effective_paths(src, dst)?;
 
     let excludes = build_globset(&options.exclusion)?;
     let mut tasks = Vec::new();
@@ -322,5 +365,35 @@ mod tests {
         let src = dst.join("inner");
         std::fs::create_dir(&src).unwrap();
         assert!(validate_paths(&src, &dst).is_ok());
+    }
+
+    #[test]
+    fn validate_effective_rejects_dir_into_parent() {
+        // src=/a/b, dst=/a: el dst crudo pasa validate_paths, pero el
+        // efectivo (/a/b) equals src → InvalidDestination.
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path().join("a");
+        std::fs::create_dir(&parent).unwrap();
+        let src = parent.join("b");
+        std::fs::create_dir(&src).unwrap();
+        let err = match validate_effective_paths(&src, &parent) {
+            Ok(()) => panic!("expected InvalidDestination"),
+            Err(e) => e,
+        };
+        match err {
+            CopyError::InvalidDestination { reason } => {
+                assert!(reason.contains("effective destination"))
+            }
+            _ => panic!("expected InvalidDestination"),
+        }
+    }
+
+    #[test]
+    fn validate_effective_allows_disjoint_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("a").join("b");
+        std::fs::create_dir_all(&src).unwrap();
+        let dst = tmp.path().join("c");
+        assert!(validate_effective_paths(&src, &dst).is_ok());
     }
 }
