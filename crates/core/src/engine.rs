@@ -76,6 +76,11 @@ impl CopyEngine {
                 FileResult::DirCreated => {
                     report.dirs_created += 1;
                 }
+                FileResult::Symlinked { src, dst } => {
+                    let _ = self.events_tx.send(CopyEvent::Symlinked { src: src.clone(), dst: dst.clone() }).await;
+                    report.symlinks_created += 1;
+                    report.symlinked.push((src, dst));
+                }
                 FileResult::Skipped { path, reason } => {
                     // Fix 3: skip centralizado
                     let _ = self.events_tx.send(CopyEvent::FileSkipped { path: path.clone(), reason }).await;
@@ -105,6 +110,7 @@ impl CopyEngine {
 enum FileResult {
     Copied { bytes: u64 }, // Fix 8: solo bytes
     DirCreated, // Fix 2: separa dirs
+    Symlinked { src: PathBuf, dst: PathBuf },
     Skipped { path: PathBuf, reason: SkipReason },
     Failed { path: PathBuf, error: String },
 }
@@ -127,12 +133,109 @@ async fn copy_task(
             // Fix 2: no cuenta como archivo
             FileResult::DirCreated
         }
-        TaskKind::Symlink => {
-            // TODO: leer con fs::read_link y crear con std::os::unix::fs::symlink / windows
-            debug!("symlink omitido por ahora: {:?}", task.src);
-            FileResult::Skipped { path: task.src.clone(), reason: SkipReason::Excluded }
-        }
+        TaskKind::Symlink => copy_symlink(task, opts, events, cancel).await,
         TaskKind::File => copy_file(task, opts, events, cancel).await,
+    }
+}
+
+async fn copy_symlink(
+    task: &CopyTask,
+    opts: &CopyOptions,
+    events: &mpsc::Sender<CopyEvent>,
+    cancel: &CancellationToken,
+) -> FileResult {
+    if cancel.is_cancelled() {
+        return FileResult::Failed { path: task.src.clone(), error: "cancelled".into() };
+    }
+
+    if opts.follow_symlinks {
+        // Seguir el enlace: copiar el contenido resuelto.
+        // El caso directorio recursivo ya viene expandido por el scanner
+        // (WalkDir con follow_links=true); aquí basta con asegurar el dir
+        // destino o delegar a copy_file si es un fichero.
+        match fs::metadata(&task.src).await {
+            Ok(m) if m.is_dir() => {
+                if let Err(e) = fs::create_dir_all(&task.dst).await {
+                    return FileResult::Failed { path: task.dst.clone(), error: e.to_string() };
+                }
+                debug!("symlink dir seguido, dir asegurado: {:?} -> {:?}", task.src, task.dst);
+                FileResult::DirCreated
+            }
+            Ok(m) if m.is_file() => {
+                let file_task = CopyTask {
+                    src: task.src.clone(),
+                    dst: task.dst.clone(),
+                    size: m.len(),
+                    kind: TaskKind::File,
+                };
+                copy_file(&file_task, opts, events, cancel).await
+            }
+            Ok(_) => {
+                debug!("symlink especial omitido: {:?}", task.src);
+                FileResult::Skipped { path: task.src.clone(), reason: SkipReason::Excluded }
+            }
+            Err(e) => FileResult::Failed { path: task.src.clone(), error: e.to_string() },
+        }
+    } else {
+        // Recrear el enlace sin seguirlo.
+        let link_target = match fs::read_link(&task.src).await {
+            Ok(p) => p,
+            Err(e) => return FileResult::Failed { path: task.src.clone(), error: e.to_string() },
+        };
+
+        if let Some(parent) = task.dst.parent() {
+            if let Err(e) = fs::create_dir_all(parent).await {
+                return FileResult::Failed { path: task.dst.clone(), error: e.to_string() };
+            }
+        }
+
+        if fs::symlink_metadata(&task.dst).await.is_ok() {
+            match opts.overwrite {
+                OverwritePolicy::Never => {
+                    return FileResult::Skipped { path: task.dst.clone(), reason: SkipReason::AlreadyExists };
+                }
+                _ => {
+                    if let Err(e) = remove_existing_dst(&task.dst).await {
+                        return FileResult::Failed { path: task.dst.clone(), error: e.to_string() };
+                    }
+                }
+            }
+        }
+
+        #[cfg(unix)]
+        {
+            if let Err(e) = std::os::unix::fs::symlink(&link_target, &task.dst) {
+                return FileResult::Failed { path: task.dst.clone(), error: e.to_string() };
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            let is_dir = fs::metadata(&task.src).await.map(|m| m.is_dir()).unwrap_or(false);
+            let res = if is_dir {
+                std::os::windows::fs::symlink_dir(&link_target, &task.dst)
+            } else {
+                std::os::windows::fs::symlink_file(&link_target, &task.dst)
+            };
+            if let Err(e) = res {
+                return FileResult::Failed { path: task.dst.clone(), error: e.to_string() };
+            }
+        }
+
+        debug!("symlink recreado: {:?} -> {:?} (target {:?})", task.src, task.dst, link_target);
+        FileResult::Symlinked { src: task.src.clone(), dst: task.dst.clone() }
+    }
+}
+
+async fn remove_existing_dst(dst: &Path) -> std::io::Result<()> {
+    let meta = fs::symlink_metadata(dst).await?;
+    if meta.file_type().is_symlink() || meta.is_file() {
+        fs::remove_file(dst).await
+    } else if meta.is_dir() {
+        // No borrar árboles por seguridad: solo vale si está vacío.
+        fs::remove_dir(dst).await
+    } else {
+        fs::remove_file(dst).await
     }
 }
 

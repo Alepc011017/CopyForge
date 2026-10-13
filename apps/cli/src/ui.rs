@@ -90,6 +90,9 @@ impl ProgressUi {
                     eprintln!("✗ {}: {}", path.display(), error);
                 });
             }
+            CopyEvent::Symlinked { .. } => {
+                // Los enlaces no pesan: no avanzan el overall.
+            }
             CopyEvent::Finished { report } => {
                 self.overall.finish_and_clear();
                 if !self.current.is_hidden() {
@@ -128,6 +131,7 @@ fn print_report(r: &Report) {
     println!("── CopyForge ─────────────────────────────");
     println!("  Archivos copiados : {}", r.files_copied);
     println!("  Dirs creados      : {}", r.dirs_created); // Fix 2: muestra dirs
+    println!("  Enlaces creados   : {}", r.symlinks_created);
     println!("  Archivos omitidos : {}", r.files_skipped);
     println!("  Archivos fallidos : {}", r.files_failed);
     println!("  Bytes copiados    : {}", format_size(r.bytes_copied, BINARY));

@@ -130,6 +130,7 @@ impl CopyForgeApp {
                             st.errors.push(format!("{}: {}", path.display(), error));
                         }
                         CopyEvent::FileCompleted { .. } => {}
+                        CopyEvent::Symlinked { .. } => {}
                         CopyEvent::Finished { report } => {
                             st.copied_bytes = st.total_bytes.min(
                                 st.copied_bytes.max(report.bytes_copied),

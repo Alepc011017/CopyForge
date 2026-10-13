@@ -9,6 +9,7 @@ pub enum CopyEvent {
     FileCompleted { path: PathBuf, elapsed: Duration },
     FileSkipped { path: PathBuf, reason: SkipReason },
     FileFailed { path: PathBuf, error: String },
+    Symlinked { src: PathBuf, dst: PathBuf },
     Finished { report: Report },
 }
 
@@ -22,6 +23,8 @@ pub struct Report {
     pub files_failed: u64,
     pub bytes_copied: u64,
     pub dirs_created: u64, // Fix 2: dirs aparte, no cuentan como files
+    pub symlinks_created: u64,
+    pub symlinked: Vec<(PathBuf, PathBuf)>,
     pub errors: Vec<(PathBuf, String)>,
     pub duration: Duration,
 }
