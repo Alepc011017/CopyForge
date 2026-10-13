@@ -44,6 +44,10 @@ pub struct Args {
     #[arg(long)]
     pub follow_symlinks: bool,
 
+    /// Permitir que los symlinks seguidos apunten fuera de src (peligroso)
+    #[arg(long)]
+    pub allow_symlink_escape: bool,
+
     /// Detener al primer error
     #[arg(long)]
     pub fail_fast: bool,
@@ -99,6 +103,8 @@ impl Args {
             parallel_files: self.jobs.max(1),
             continue_on_error: !self.fail_fast,
             exclusion: self.exclude.clone(),
+            allow_symlink_escape: self.allow_symlink_escape,
+            max_escape_bytes: None,
         }
     }
 }

@@ -145,6 +145,22 @@ fn canonicalize_lossy(p: &Path) -> PathBuf {
     }
 }
 
+/// Suma los bytes de ficheros regulares bajo `target` (sin seguir symlinks).
+///
+/// P0.9: se usa para el cap `max_escape_bytes` del árbol externo cuando
+/// `allow_symlink_escape=true`. Defensa en profundidad: evita copiar un
+/// árbol externo gigante por accidente. Sin `unwrap`/`expect`.
+fn external_tree_bytes(target: &Path) -> u64 {
+    WalkDir::new(target)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
+}
+
 pub fn build_plan(src: &Path, dst: &Path, options: &CopyOptions) -> Result<CopyPlan, CopyError> {
     // P0.5: validar antes de cualquier IO (H-4): src==dst y dst⊂src.
     validate_paths(src, dst)?;
@@ -194,6 +210,10 @@ pub fn build_plan(src: &Path, dst: &Path, options: &CopyOptions) -> Result<CopyP
     let excludes = build_globset(&options.exclusion)?;
     let mut tasks = Vec::new();
     let mut total_bytes = 0u64;
+
+    // P0.9: base para detectar escapes (symlink seguido fuera de src).
+    let src_c = canonicalize_lossy(src);
+    let mut escape_bytes: u64 = 0;
 
     #[cfg(unix)]
     let mut visited_inodes: HashSet<(u64, u64)> = HashSet::new();
@@ -262,6 +282,36 @@ pub fn build_plan(src: &Path, dst: &Path, options: &CopyOptions) -> Result<CopyP
         } else {
             TaskKind::File
         };
+
+        // P0.9: con follow_symlinks, un symlink cuyo target resuelto queda
+        // fuera de src planificaría el árbol externo (p. ej. link → /).
+        // Default seguro: abortar con SymlinkEscapesSource. Opt-in con
+        // allow_symlink_escape (+ cap opcional max_escape_bytes).
+        if kind == TaskKind::Symlink && options.follow_symlinks {
+            let target_c = canonicalize_lossy(path);
+            if !target_c.starts_with(&src_c) {
+                if !options.allow_symlink_escape {
+                    return Err(CopyError::SymlinkEscapesSource {
+                        path: path.to_path_buf(),
+                        target: target_c,
+                    });
+                }
+                if let Some(limit) = options.max_escape_bytes {
+                    let add = match std::fs::metadata(&target_c) {
+                        Ok(m) if m.is_dir() => external_tree_bytes(&target_c),
+                        Ok(m) => m.len(),
+                        Err(_) => 0,
+                    };
+                    escape_bytes += add;
+                    if escape_bytes > limit {
+                        return Err(CopyError::EscapeCapExceeded {
+                            limit,
+                            current: escape_bytes,
+                        });
+                    }
+                }
+            }
+        }
 
         if kind == TaskKind::File {
             total_bytes += meta.len();
@@ -436,5 +486,75 @@ mod tests {
         assert_eq!(plan.tasks.len(), 1);
         assert_eq!(plan.tasks[0].kind, TaskKind::Symlink);
         assert_eq!(plan.tasks[0].dst, dst);
+    }
+
+    fn escape_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("externo.txt"), b"12345678").unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        let link = src.join("link-out");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(not(unix))]
+        std::os::windows::fs::symlink_dir(&outside, &link).unwrap();
+        let dst = tmp.path().join("dst");
+        (tmp, src, link, dst)
+    }
+
+    #[test]
+    fn escape_symlink_outside_is_rejected_by_default() {
+        let (_tmp, src, link, dst) = escape_fixture();
+        let opts = CopyOptions {
+            follow_symlinks: true,
+            ..CopyOptions::default()
+        };
+        let err = match build_plan(&src, &dst, &opts) {
+            Ok(_) => panic!("expected SymlinkEscapesSource"),
+            Err(e) => e,
+        };
+        match err {
+            CopyError::SymlinkEscapesSource { path, target } => {
+                assert_eq!(path, link);
+                assert!(target.ends_with("outside"));
+            }
+            _ => panic!("expected SymlinkEscapesSource"),
+        }
+    }
+
+    #[test]
+    fn escape_symlink_allowed_with_opt_in() {
+        let (_tmp, src, _link, dst) = escape_fixture();
+        let opts = CopyOptions {
+            follow_symlinks: true,
+            allow_symlink_escape: true,
+            ..CopyOptions::default()
+        };
+        let plan = build_plan(&src, &dst, &opts).unwrap();
+        assert!(plan.tasks.iter().any(|t| t.src.ends_with("externo.txt")));
+    }
+
+    #[test]
+    fn escape_cap_stops_big_external_tree() {
+        let (_tmp, src, _link, dst) = escape_fixture();
+        let opts = CopyOptions {
+            follow_symlinks: true,
+            allow_symlink_escape: true,
+            max_escape_bytes: Some(1),
+            ..CopyOptions::default()
+        };
+        let err = match build_plan(&src, &dst, &opts) {
+            Ok(_) => panic!("expected EscapeCapExceeded"),
+            Err(e) => e,
+        };
+        match err {
+            CopyError::EscapeCapExceeded { limit, current } => {
+                assert_eq!(limit, 1);
+                assert_eq!(current, 8);
+            }
+            _ => panic!("expected EscapeCapExceeded"),
+        }
     }
 }

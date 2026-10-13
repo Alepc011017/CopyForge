@@ -18,4 +18,10 @@ pub enum CopyError {
 
     #[error("destino inválido: {reason}")]
     InvalidDestination { reason: String },
+
+    #[error("symlink fuera de src: {path} -> {target}")]
+    SymlinkEscapesSource { path: PathBuf, target: PathBuf },
+
+    #[error("límite de escape superado: {current} > {limit} bytes")]
+    EscapeCapExceeded { limit: u64, current: u64 },
 }

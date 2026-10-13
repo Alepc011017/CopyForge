@@ -27,6 +27,8 @@ pub struct CopyForgeApp {
     state: Option<CopyState>,
     // Fix dnd: diagnóstico visible
     dnd_debug: String,
+    // P0.9: opt-in para seguir symlinks fuera de src.
+    allow_escape: bool,
 }
 
 impl Default for CopyForgeApp {
@@ -37,6 +39,7 @@ impl Default for CopyForgeApp {
             status: String::from("Listo"),
             state: None,
             dnd_debug: String::from("DnD: sin eventos"),
+            allow_escape: false,
         }
     }
 }
@@ -60,7 +63,10 @@ impl CopyForgeApp {
             self.status = format!("Rutas inválidas: {e}");
             return;
         }
-        let opts = CopyOptions::default();
+        let opts = CopyOptions {
+            allow_symlink_escape: self.allow_escape,
+            ..CopyOptions::default()
+        };
 
         let plan = match build_plan(&src, &dst, &opts) {
             Ok(p) => p,
@@ -299,6 +305,10 @@ impl eframe::App for CopyForgeApp {
                     self.state = None;
                     self.status = String::from("Listo");
                 }
+            });
+            ui.add_enabled_ui(!self.copying(), |ui| {
+                ui.checkbox(&mut self.allow_escape, "Permitir symlinks fuera de src")
+                    .on_hover_text("Si se sigue un enlace fuera del origen, copiar su contenido (peligroso)");
             });
 
             ui.add_space(8.0);

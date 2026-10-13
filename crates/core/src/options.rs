@@ -8,6 +8,12 @@ pub struct CopyOptions {
     pub parallel_files: usize,     // archivos en paralelo
     pub continue_on_error: bool,
     pub exclusion: Vec<String>,    // globs relativos a la raíz
+    /// P0.9: permite que symlinks seguidos apunten fuera de `src`.
+    /// Default `false` (seguro): se aborta con `SymlinkEscapesSource`.
+    pub allow_symlink_escape: bool,
+    /// P0.9: cap opcional (bytes) del árbol externo cuando
+    /// `allow_symlink_escape=true`. Defensa en profundidad; default `None`.
+    pub max_escape_bytes: Option<u64>,
 }
 
 impl Default for CopyOptions {
@@ -21,6 +27,8 @@ impl Default for CopyOptions {
             parallel_files: 4,
             continue_on_error: true,
             exclusion: Vec::new(),
+            allow_symlink_escape: false,
+            max_escape_bytes: None,
         }
     }
 }

@@ -15,6 +15,8 @@
 - **P0.5** ⏳ Pendiente — Validación `src==dst` y `dst⊂src` (H-4): abortar antes de `build_plan` con `CopyError::InvalidDestination`. Afecta `crates/core/src/scanner.rs:11-14`, `apps/cli/src/runner.rs`, `apps/gui/src/app.rs`.
 - **P0.6** ⏳ Pendiente — Integridad: `sync_all()` en el archivo temporal antes del rename, y `sync_all()` del directorio padre tras el rename en Unix (H-2). Afecta `crates/core/src/engine.rs:350-355`.
 - **P0.7** ⏳ Pendiente — Cap en `report.errors`: limitar a 1000 entradas + campo `errors_truncated: usize` (H-7). Afecta `crates/core/src/engine.rs:89-93`, `crates/core/src/events.rs`.
+- **P0.8** ✅ Hecho — `src` symlink roto como raíz: el gate `!src.exists()` lo rechazaba con `SourceNotFound` aunque el enlace es recreable; además WalkDir falla con NotFound en profundidad 0. Gate con `symlink_metadata` + rama de tarea `Symlink` única en `crates/core/src/scanner.rs`. Test `build_plan_accepts_broken_symlink_src` + copia real verificada (`Enlaces creados: 1`). Commit: `8974688`.
+- **P0.9** ✅ Hecho — Escape con `follow_symlinks=true` (default seguro + opt-in): `SymlinkEscapesSource{path,target}` si el target resuelto queda fuera de `src`; flag `allow_symlink_escape` en `CopyOptions` (default `false`), CLI `--allow-symlink-escape`, checkbox GUI “Permitir symlinks fuera de src”; cap `max_escape_bytes: Option<u64>` con `EscapeCapExceeded{limit,current}` (defensa en profundidad). 3 tests nuevos. Sin commitear todavía.
 
 ## P1 — Capa multiplataforma y robustez de temporales
 
@@ -24,6 +26,8 @@
 - **P1.4** ⏳ Pendiente — Temporales robustos (H-3): `tempfile::NamedTempFile` en el mismo directorio + limpieza de huérfanos `*.copyforge.tmp` al inicio. Excluir el patrón en `scanner.rs:118-122`.
 - **P1.5** ⏳ Pendiente — Globs cross-platform: `GlobBuilder::literal_separator(true)` + normalizar `/` antes de matchear. Afecta `scanner.rs:103-116`.
 - **P1.6** ⏳ Pendiente — Fallback de symlink en Windows (H-6): si `symlink_file`/`symlink_dir` devuelve `EACCES`, copiar contenido + emitir `CopyEvent::SymlinkFallback` con warning. Afecta `engine.rs:212-223`.
+- **P1.7** ⏳ Pendiente — Validación insensible a mayúsculas (H-8): `validate_paths`/`validate_effective_paths` comparan byte a byte; en Windows/macOS `C:\Foo` y `c:\foo` son el mismo dir y bypassearían el chequeo. Normalizar caja al canonalizar en `platform.rs` (P1.1) cuando se cree.
+- **P1.8** ⏳ Pendiente — Falso positivo menor (H-9): `src` symlink cuyo target es el `dst` (p. ej. `L→/real`, `dst=/real`) se rechaza como “same” aunque el efectivo (`/real/L`) sería válido. Workaround: pasar el `dst` explícito (`/real/L`). Mejora futura: no seguir el componente final symlink en `canonicalize_lossy` teniendo en cuenta `follow_symlinks`.
 
 ## P2 — Integración CLI/GUI
 
@@ -44,6 +48,14 @@
 - H-5 → P2.3
 - H-6 → P1.6
 - H-7 → P0.7
+- H-8 → P1.7 (validación case-insensitive en Windows/macOS)
+- H-9 → P1.8 (falso positivo symlink-src→target-dir, con workaround)
+- H-10 → P0.9 (escape follow-symlink fuera de src: default seguro + opt-in + cap)
+
+## Limitaciones conocidas (sin acción)
+- TOCTOU validación→walk: el FS puede cambiar entre `validate_*` y el WalkDir/copia (p. ej. symlink sustituido tras validar). Sin locks no es cerrable del todo; la validación es defensa en profundidad, no garantía. No se actúa.
+- `Path::starts_with` es por componentes (`/a/bb` NO está dentro de `/a/b`): verificado, sin falsos positivos por prefijo de string.
+- Hardlinks src/dst hermanos: seguros (el rename del tmp rompe el link de `dst`, `src` intacto). Sin acción.
 
 ## Notas de proceso
 - Cada paso se commitea al terminar: `git commit -m "P0.X: <descripción>"`.
