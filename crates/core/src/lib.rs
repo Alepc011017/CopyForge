@@ -3,6 +3,7 @@ pub mod error;
 pub mod events;
 pub mod options;
 pub mod plan;
+pub mod platform;
 pub mod scanner;
 
 pub use engine::CopyEngine;

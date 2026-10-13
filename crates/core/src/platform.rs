@@ -1,0 +1,204 @@
+//! Capa multiplataforma (P1.1a).
+//!
+//! Todo el `#[cfg]` de estas operaciones vive en este módulo; el resto del
+//! crate llama a `platform::*` sin `cfg`. Funciones libres, sin traits.
+//! Sin `unwrap`/`expect` en productivo.
+
+use std::io;
+use std::path::{Path, PathBuf};
+
+/// Crea un enlace simbólico a un fichero.
+///
+/// `src` = destino existente al que apuntará el enlace;
+/// `dst` = ruta del enlace a crear.
+#[cfg(unix)]
+pub fn symlink_file(src: &Path, dst: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+/// Crea un enlace simbólico a un fichero.
+///
+/// `src` = destino existente al que apuntará el enlace;
+/// `dst` = ruta del enlace a crear.
+#[cfg(windows)]
+pub fn symlink_file(src: &Path, dst: &Path) -> io::Result<()> {
+    std::os::windows::fs::symlink_file(src, dst)
+}
+
+/// Crea un enlace simbólico a un directorio.
+///
+/// `src` = destino existente al que apuntará el enlace;
+/// `dst` = ruta del enlace a crear.
+#[cfg(unix)]
+pub fn symlink_dir(src: &Path, dst: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+/// Crea un enlace simbólico a un directorio.
+///
+/// `src` = destino existente al que apuntará el enlace;
+/// `dst` = ruta del enlace a crear.
+#[cfg(windows)]
+pub fn symlink_dir(src: &Path, dst: &Path) -> io::Result<()> {
+    std::os::windows::fs::symlink_dir(src, dst)
+}
+
+/// Fija (`true`) o quita (`false`) el solo-lectura.
+///
+/// Unix: quita los bits de escritura (`mode & !0o222`); al reactivar,
+/// restaura el bit de escritura del propietario (`mode | 0o200`).
+/// Windows: `permissions().set_readonly()`.
+#[cfg(unix)]
+pub fn set_readonly(path: &Path, readonly: bool) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(path)?.permissions();
+    let mut mode = perms.mode();
+    if readonly {
+        mode &= !0o222;
+    } else {
+        mode |= 0o200;
+    }
+    perms.set_mode(mode);
+    std::fs::set_permissions(path, perms)
+}
+
+/// Fija (`true`) o quita (`false`) el solo-lectura.
+///
+/// Unix: quita los bits de escritura (`mode & !0o222`); al reactivar,
+/// restaura el bit de escritura del propietario (`mode | 0o200`).
+/// Windows: `permissions().set_readonly()`.
+#[cfg(windows)]
+pub fn set_readonly(path: &Path, readonly: bool) -> io::Result<()> {
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_readonly(readonly);
+    std::fs::set_permissions(path, perms)
+}
+
+/// ¿El path está oculto?
+///
+/// Unix: el nombre empieza por `.` (sin `file_name` → `false`).
+/// Windows: atributo `FILE_ATTRIBUTE_HIDDEN`.
+#[cfg(unix)]
+pub fn is_hidden(path: &Path) -> io::Result<bool> {
+    Ok(path
+        .file_name()
+        .map(|n| n.to_string_lossy().starts_with('.'))
+        .unwrap_or(false))
+}
+
+/// ¿El path está oculto?
+///
+/// Unix: el nombre empieza por `.` (sin `file_name` → `false`).
+/// Windows: atributo `FILE_ATTRIBUTE_HIDDEN`.
+#[cfg(windows)]
+pub fn is_hidden(path: &Path) -> io::Result<bool> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Storage::FileSystem::{
+        GetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, INVALID_FILE_ATTRIBUTES,
+    };
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `wide` es NUL-terminado y vive hasta el fin de la llamada.
+    let attrs = unsafe { GetFileAttributesW(windows::core::PCWSTR(wide.as_ptr())) };
+    if attrs == INVALID_FILE_ATTRIBUTES {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((attrs & FILE_ATTRIBUTE_HIDDEN.0) != 0)
+}
+
+/// Canonicaliza y devuelve forma larga (para comparar y evadir `MAX_PATH`).
+///
+/// Unix: `fs::canonicalize`. Windows: `fs::canonicalize` + prefijo `\\?\`
+/// (idempotente: si ya lo trae, se devuelve tal cual; `\\servidor\...` se
+/// convierte a `\\?\UNC\servidor\...`).
+#[cfg(unix)]
+pub fn canonicalize_long(path: &Path) -> io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+/// Canonicaliza y devuelve forma larga (para comparar y evadir `MAX_PATH`).
+///
+/// Unix: `fs::canonicalize`. Windows: `fs::canonicalize` + prefijo `\\?\`
+/// (idempotente: si ya lo trae, se devuelve tal cual; `\\servidor\...` se
+/// convierte a `\\?\UNC\servidor\...`).
+#[cfg(windows)]
+pub fn canonicalize_long(path: &Path) -> io::Result<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let canon = std::fs::canonicalize(path)?;
+    let w: Vec<u16> = canon.as_os_str().encode_wide().collect();
+    const VERBATIM: &[u16] = &['\\' as u16, '\\' as u16, '?' as u16, '\\' as u16];
+    const UNC: &[u16] = &['\\' as u16, '\\' as u16];
+    const DEVICE_UNC: &[u16] = &[
+        '\\' as u16, '\\' as u16, '?' as u16, '\\' as u16, 'U' as u16, 'N' as u16,
+        'C' as u16, '\\' as u16,
+    ];
+    if w.starts_with(VERBATIM) {
+        return Ok(canon);
+    }
+    let mut out: Vec<u16> = Vec::with_capacity(w.len() + 8);
+    if w.starts_with(UNC) {
+        out.extend_from_slice(DEVICE_UNC);
+        out.extend_from_slice(&w[2..]);
+    } else {
+        out.extend_from_slice(VERBATIM);
+        out.extend_from_slice(&w);
+    }
+    Ok(PathBuf::from(OsString::from_wide(&out)))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn write_file(p: &Path) {
+        std::fs::write(p, b"platform").unwrap();
+    }
+
+    #[test]
+    fn symlink_file_creates_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target.txt");
+        write_file(&target);
+        let link = tmp.path().join("link.txt");
+        symlink_file(&target, &link).unwrap();
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(meta.file_type().is_symlink());
+        assert_eq!(std::fs::read_link(&link).unwrap(), target);
+    }
+
+    #[test]
+    fn set_readonly_clears_write_bit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("rw.txt");
+        write_file(&f);
+        set_readonly(&f, true).unwrap();
+        assert!(std::fs::metadata(&f).unwrap().permissions().readonly());
+        set_readonly(&f, false).unwrap();
+        assert!(!std::fs::metadata(&f).unwrap().permissions().readonly());
+    }
+
+    #[test]
+    fn is_hidden_detects_dotfiles() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hidden = tmp.path().join(".oculto");
+        write_file(&hidden);
+        assert!(is_hidden(&hidden).unwrap());
+        let plain = tmp.path().join("visible.txt");
+        write_file(&plain);
+        assert!(!is_hidden(&plain).unwrap());
+    }
+
+    #[test]
+    fn canonicalize_long_returns_absolute() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("a.txt");
+        write_file(&f);
+        let canon = canonicalize_long(&f).unwrap();
+        assert!(canon.is_absolute());
+        assert_eq!(canon.file_name(), f.file_name());
+    }
+}

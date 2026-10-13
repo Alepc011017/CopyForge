@@ -854,6 +854,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "walkdir",
+ "windows 0.61.3",
 ]
 
 [[package]]

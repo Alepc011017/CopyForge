@@ -7,6 +7,8 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::os::unix::fs::MetadataExt;
 
 use crate::{error::CopyError, options::CopyOptions, plan::*};
+#[cfg(any(not(unix), test))]
+use crate::platform;
 
 /// Resuelve el destino efectivo **antes** de construir el plan.
 ///
@@ -243,7 +245,8 @@ pub fn build_plan(src: &Path, dst: &Path, options: &CopyOptions) -> Result<CopyP
                 {
                     if let Ok(m) = std::fs::metadata(e.path()) {
                         if m.is_dir() {
-                            match e.path().canonicalize() {
+                            // P1.1a: canonicalización vía platform::.
+                            match platform::canonicalize_long(e.path()) {
                                 Ok(c) => {
                                     if !visited_dirs.insert(c) {
                                         return false;
@@ -477,10 +480,7 @@ mod tests {
     fn build_plan_accepts_broken_symlink_src() {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("broken");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink("/nonexistent-target-xyz", &src).unwrap();
-        #[cfg(not(unix))]
-        std::os::windows::fs::symlink_file("C:\\nonexistent-target-xyz", &src).unwrap();
+        platform::symlink_file(Path::new("/nonexistent-target-xyz"), &src).unwrap();
         let dst = tmp.path().join("out-link");
         let plan = build_plan(&src, &dst, &CopyOptions::default()).unwrap();
         assert_eq!(plan.tasks.len(), 1);
@@ -496,10 +496,7 @@ mod tests {
         let src = tmp.path().join("src");
         std::fs::create_dir(&src).unwrap();
         let link = src.join("link-out");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&outside, &link).unwrap();
-        #[cfg(not(unix))]
-        std::os::windows::fs::symlink_dir(&outside, &link).unwrap();
+        platform::symlink_dir(&outside, &link).unwrap();
         let dst = tmp.path().join("dst");
         (tmp, src, link, dst)
     }

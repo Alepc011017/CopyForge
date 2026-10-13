@@ -22,11 +22,13 @@
 ## P1 — Capa multiplataforma y robustez de temporales
 
 - **P1.1** ⏳ Pendiente — Crear `crates/core/src/platform.rs` con: `symlink_file`, `symlink_dir`, `set_readonly`, `set_times`, `is_hidden`, `canonicalize_long`, `atomic_replace`, `sync_dir` (abrir dir con `FILE_FLAG_BACKUP_SEMANTICS` para implementar `DurabilityPolicy::Full` en Windows).
+- **P1.1a** ✅ Hecho — Esqueleto `platform.rs` con `symlink_file/dir`, `set_readonly`, `is_hidden`, `canonicalize_long` (unix+windows, funciones libres) + `windows 0.61` solo con `Win32_Storage_FileSystem` + `Win32_Foundation` como `[target.'cfg(windows)'.dependencies]`. Engine sin `cfg` para crear symlinks; tests de scanner migrados a `platform::`. Quedan fuera (siguientes sub-pasos): `atomic_replace`, `sync_dir`, `set_times`. Rama Windows verificada por inspección (sin toolchain MSVC/MinGW aquí). 4 tests nuevos (24 en total). Sin commitear todavía.
 - **P1.2** ⏳ Pendiente — `atomic_replace` Windows con `ReplaceFileW` + fallback a `MoveFileExW` si `ERROR_FILE_NOT_FOUND`. En Unix mantiene `rename`. Sustituye `remove+rename` actual en `engine.rs:419-430`.
 - **P1.3** ⏳ Pendiente — `preserve_metadata` completo: `mtime` + `mode` en Unix; `readonly` + `mtime` en Windows. Incluye H-1 (mtime roto en `IfDifferent`/`IfNewer`). Afecta `engine.rs:380-384`.
 - **P1.4** ⏳ Pendiente — Temporales robustos (H-3): `tempfile::NamedTempFile` en el mismo directorio + limpieza de huérfanos `*.copyforge.tmp` al inicio. Excluir el patrón en `scanner.rs:118-122`.
 - **P1.5** ⏳ Pendiente — Globs cross-platform: `GlobBuilder::literal_separator(true)` + normalizar `/` antes de matchear. Afecta `scanner.rs:103-116`.
 - **P1.6** ⏳ Pendiente — Fallback de symlink en Windows (H-6): si `symlink_file`/`symlink_dir` devuelve `EACCES`, copiar contenido + emitir `CopyEvent::SymlinkFallback` con warning. Afecta `engine.rs:212-223`.
+  - Sub-caso: symlink roto apuntando a directorio en Windows → se recrea como file. Sin heurística fiable; documentar como limitación conocida y valorar fallback a copia del target o warning.
 - **P1.7** ⏳ Pendiente — Validación insensible a mayúsculas (H-8): `validate_paths`/`validate_effective_paths` comparan byte a byte; en Windows/macOS `C:\Foo` y `c:\foo` son el mismo dir y bypassearían el chequeo. Normalizar caja al canonalizar en `platform.rs` (P1.1) cuando se cree.
 - **P1.8** ⏳ Pendiente — Falso positivo menor (H-9): `src` symlink cuyo target es el `dst` (p. ej. `L→/real`, `dst=/real`) se rechaza como “same” aunque el efectivo (`/real/L`) sería válido. Workaround: pasar el `dst` explícito (`/real/L`). Mejora futura: no seguir el componente final symlink en `canonicalize_lossy` teniendo en cuenta `follow_symlinks`.
 

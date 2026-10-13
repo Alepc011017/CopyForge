@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  linux:
+    name: Linux · test + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Toolchain estable + clippy
+        uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
+        with:
+          toolchain: stable
+          components: clippy
+      - name: Tests
+        run: cargo test --workspace
+      - name: Clippy estricto
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  windows:
+    name: Windows · solo compilación
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Toolchain estable
+        uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
+        with:
+          toolchain: stable
+      # Solo verificar que compila (incluye el código cfg(windows)
+      # de platform.rs, que no se puede comprobar en Linux).
+      - name: Check workspace
+        run: cargo check --workspace

@@ -14,6 +14,7 @@ use crate::{
     events::*,
     options::{CopyOptions, DurabilityPolicy, OverwritePolicy, VerifyPolicy},
     plan::{CopyPlan, CopyTask, TaskKind},
+    platform,
 };
 
 pub struct CopyEngine {
@@ -222,24 +223,17 @@ async fn copy_symlink(
             }
         }
 
-        #[cfg(unix)]
-        {
-            if let Err(e) = std::os::unix::fs::symlink(&link_target, &task.dst) {
-                return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
-            }
-        }
-
-        #[cfg(windows)]
-        {
-            let is_dir = fs::metadata(&task.src).await.map(|m| m.is_dir()).unwrap_or(false);
-            let res = if is_dir {
-                std::os::windows::fs::symlink_dir(&link_target, &task.dst)
-            } else {
-                std::os::windows::fs::symlink_file(&link_target, &task.dst)
-            };
-            if let Err(e) = res {
-                return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
-            }
+        // P1.1a: creación delegada a platform:: (sin cfg aquí; en Unix
+        // ambas ramas usan symlink(), en Windows eligen file/dir).
+        let is_dir = fs::metadata(&task.src).await.map(|m| m.is_dir()).unwrap_or(false);
+        // TODO(P1.6): symlink roto apuntando a directorio se recrea como file en Windows (CreateSymbolicLink no valida el target). Ver docs/PLAN.md P1.6.
+        let res = if is_dir {
+            platform::symlink_dir(&link_target, &task.dst)
+        } else {
+            platform::symlink_file(&link_target, &task.dst)
+        };
+        if let Err(e) = res {
+            return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
         }
 
         debug!("symlink recreado: {:?} -> {:?} (target {:?})", task.src, task.dst, link_target);
