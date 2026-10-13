@@ -149,7 +149,10 @@ pub fn build_plan(src: &Path, dst: &Path, options: &CopyOptions) -> Result<CopyP
     // P0.5: validar antes de cualquier IO (H-4): src==dst y dst⊂src.
     validate_paths(src, dst)?;
 
-    if !src.exists() {
+    // P0.8: symlink_metadata en vez de exists(), para aceptar un src que
+    // sea un symlink roto (recreable con read_link). exists() sigue el
+    // enlace y lo rechazaría con SourceNotFound.
+    if std::fs::symlink_metadata(src).is_err() {
         return Err(CopyError::SourceNotFound(src.to_path_buf()));
     }
 
@@ -164,6 +167,29 @@ pub fn build_plan(src: &Path, dst: &Path, options: &CopyOptions) -> Result<CopyP
     // dst crudo no (p. ej. src=/a/b, dst=/a → efectivo /a/b). Validar
     // antes de generar tareas.
     validate_effective_paths(src, dst)?;
+
+    // P0.8: raíz symlink rota: WalkDir falla con NotFound en profundidad 0
+    // aunque el enlace sea recreable con read_link. Se emite una única
+    // tarea Symlink. (Si no es symlink, se sigue al walk normal, que
+    // reportará el error por entrada como antes.)
+    if std::fs::metadata(src).is_err() {
+        let link_meta = std::fs::symlink_metadata(src).map_err(|e| CopyError::Io {
+            path: src.to_path_buf(),
+            source: e,
+        })?;
+        if link_meta.file_type().is_symlink() {
+            return Ok(CopyPlan {
+                tasks: vec![CopyTask {
+                    src: src.to_path_buf(),
+                    dst: effective_dst,
+                    size: link_meta.len(),
+                    kind: TaskKind::Symlink,
+                }],
+                options: options.clone(),
+                total_bytes: 0,
+            });
+        }
+    }
 
     let excludes = build_globset(&options.exclusion)?;
     let mut tasks = Vec::new();
@@ -395,5 +421,20 @@ mod tests {
         std::fs::create_dir_all(&src).unwrap();
         let dst = tmp.path().join("c");
         assert!(validate_effective_paths(&src, &dst).is_ok());
+    }
+
+    #[test]
+    fn build_plan_accepts_broken_symlink_src() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("broken");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/nonexistent-target-xyz", &src).unwrap();
+        #[cfg(not(unix))]
+        std::os::windows::fs::symlink_file("C:\\nonexistent-target-xyz", &src).unwrap();
+        let dst = tmp.path().join("out-link");
+        let plan = build_plan(&src, &dst, &CopyOptions::default()).unwrap();
+        assert_eq!(plan.tasks.len(), 1);
+        assert_eq!(plan.tasks[0].kind, TaskKind::Symlink);
+        assert_eq!(plan.tasks[0].dst, dst);
     }
 }
