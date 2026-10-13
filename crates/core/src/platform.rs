@@ -220,6 +220,68 @@ pub fn canonicalize_long(path: &Path) -> io::Result<PathBuf> {
     Ok(PathBuf::from(OsString::from_wide(&out)))
 }
 
+/// Sincroniza un directorio a disco (hace durable las entradas creadas
+/// por renames recientes dentro de él).
+///
+/// Unix: `File::open(dir)` + `sync_all()`.
+///
+/// Windows: `CreateFileW` con `FILE_FLAG_BACKUP_SEMANTICS` (sin ese flag
+/// no se pueden abrir directorios) + `FlushFileBuffers`, cerrando el
+/// handle siempre (`CloseHandle`).
+/// verificado por CI windows-latest, ver .github/workflows/ci.yml
+///
+/// Sin `unwrap`/`expect`.
+#[cfg(unix)]
+pub fn sync_dir(dir: &Path) -> io::Result<()> {
+    let f = std::fs::File::open(dir)?;
+    f.sync_all()
+}
+
+/// Sincroniza un directorio a disco (hace durable las entradas creadas
+/// por renames recientes dentro de él).
+///
+/// Unix: `File::open(dir)` + `sync_all()`.
+///
+/// Windows: `CreateFileW` con `FILE_FLAG_BACKUP_SEMANTICS` (sin ese flag
+/// no se pueden abrir directorios) + `FlushFileBuffers`, cerrando el
+/// handle siempre (`CloseHandle`).
+/// verificado por CI windows-latest, ver .github/workflows/ci.yml
+///
+/// Sin `unwrap`/`expect`.
+#[cfg(windows)]
+pub fn sync_dir(dir: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Foundation::{CloseHandle, GENERIC_READ};
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FlushFileBuffers, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows::core::PCWSTR;
+
+    fn wide_null(p: &Path) -> Vec<u16> {
+        p.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    // SAFETY: el buffer es NUL-terminado y vive hasta el fin de la llamada.
+    // El handle se cierra siempre antes de retornar.
+    let dir_w = wide_null(dir);
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(dir_w.as_ptr()),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            None,
+        )
+    }
+    .map_err(io::Error::from)?;
+    let flushed = unsafe { FlushFileBuffers(handle) }.map_err(io::Error::from);
+    let _ = unsafe { CloseHandle(handle) };
+    flushed
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -283,6 +345,15 @@ mod tests {
         assert_eq!(std::fs::read(&b).unwrap(), b"nuevo");
         assert!(!a.exists());
     }
+
+    #[test]
+    fn sync_dir_flushes_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("a.txt");
+        std::fs::write(&f, b"sync").unwrap();
+        sync_dir(tmp.path()).unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"sync");
+    }
 }
 
 #[cfg(all(test, windows))]
@@ -299,5 +370,14 @@ mod tests_windows {
         atomic_replace(&a, &b).unwrap();
         assert_eq!(std::fs::read(&b).unwrap(), b"nuevo");
         assert!(!a.exists());
+    }
+
+    #[test]
+    fn sync_dir_flushes_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("a.txt");
+        std::fs::write(&f, b"sync").unwrap();
+        sync_dir(tmp.path()).unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"sync");
     }
 }

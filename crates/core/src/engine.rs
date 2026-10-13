@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::Once;
 use std::time::Instant;
 
 use tokio::fs;
@@ -41,8 +40,6 @@ impl CopyEngine {
         let _ = self.events_tx.send(CopyEvent::Planned { total_files, total_bytes }).await;
 
         let sem = Arc::new(Semaphore::new(self.options.parallel_files.max(1)));
-        // P0.6a-fix: aviso de Full-en-Windows una sola vez por invocación.
-        let full_warn = Arc::new(Once::new());
         // Fix 2: canal por tareas totales
         let (res_tx, mut res_rx) = mpsc::channel::<FileResult>(total_tasks.max(1));
         let mut handles = Vec::with_capacity(total_tasks);
@@ -58,7 +55,6 @@ impl CopyEngine {
             let rtx = res_tx.clone();
             let cancel = self.cancel.clone();
             let sem = sem.clone();
-            let full_warn = full_warn.clone();
 
             handles.push(tokio::spawn(async move {
                 // P0.3: el permiso se adquiere DENTRO de la tarea para no
@@ -69,7 +65,7 @@ impl CopyEngine {
                     let Ok(_permit) = sem.acquire_owned().await else {
                         return;
                     };
-                    copy_task(&task, &opts, &tx, &cancel, full_warn).await
+                    copy_task(&task, &opts, &tx, &cancel).await
                 };
                 let _ = rtx.send(result).await;
             }));
@@ -139,7 +135,6 @@ async fn copy_task(
     opts: &CopyOptions,
     events: &mpsc::Sender<CopyEvent>,
     cancel: &CancellationToken,
-    full_warn: Arc<Once>,
 ) -> FileResult {
     if cancel.is_cancelled() {
         return FileResult::Failed { path: task.src.clone(), error: CopyError::Cancelled };
@@ -153,8 +148,8 @@ async fn copy_task(
             // Fix 2: no cuenta como archivo
             FileResult::DirCreated
         }
-        TaskKind::Symlink => copy_symlink(task, opts, events, cancel, full_warn).await,
-        TaskKind::File => copy_file(task, opts, events, cancel, full_warn).await,
+        TaskKind::Symlink => copy_symlink(task, opts, events, cancel).await,
+        TaskKind::File => copy_file(task, opts, events, cancel).await,
     }
 }
 
@@ -163,7 +158,6 @@ async fn copy_symlink(
     opts: &CopyOptions,
     events: &mpsc::Sender<CopyEvent>,
     cancel: &CancellationToken,
-    full_warn: Arc<Once>,
 ) -> FileResult {
     if cancel.is_cancelled() {
         return FileResult::Failed { path: task.src.clone(), error: CopyError::Cancelled };
@@ -189,7 +183,7 @@ async fn copy_symlink(
                     size: m.len(),
                     kind: TaskKind::File,
                 };
-                copy_file(&file_task, opts, events, cancel, full_warn).await
+                copy_file(&file_task, opts, events, cancel).await
             }
             Ok(_) => {
                 debug!("symlink especial omitido: {:?}", task.src);
@@ -258,7 +252,6 @@ async fn copy_file(
     opts: &CopyOptions,
     events: &mpsc::Sender<CopyEvent>,
     cancel: &CancellationToken,
-    full_warn: Arc<Once>,
 ) -> FileResult {
     let start = Instant::now();
 
@@ -411,10 +404,11 @@ async fn copy_file(
         return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
     }
 
-    // --- durabilidad post-rename (P0.6a): solo Full sincroniza el dir padre ---
+    // --- durabilidad post-rename (P1.1c): solo Full sincroniza el dir padre ---
     if opts.durability == DurabilityPolicy::Full {
-        if let Err(e) = sync_parent_dir(&task.dst, &full_warn).await {
-            return FileResult::Failed { path: task.dst.clone(), error: e };
+        let parent = task.dst.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+        if let Err(source) = platform::sync_dir(&parent) {
+            return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: parent, source } };
         }
     }
 
@@ -461,36 +455,6 @@ async fn apply_durability(
     }
 }
 
-/// Fase post-rename de [`DurabilityPolicy`]: solo `Full` sincroniza el
-/// directorio padre para hacer durable el propio rename.
-///
-/// En Windows degrada a `File` (abrir directorios exige
-/// `FILE_FLAG_BACKUP_SEMANTICS`; ver P1.1) con un `warn` emitido una sola
-/// vez por invocación vía `_warn_once`.
-///
-/// Sin `unwrap`/`expect`.
-async fn sync_parent_dir(dst: &Path, _warn_once: &Once) -> Result<(), CopyError> {
-    #[cfg(unix)]
-    {
-        let parent = dst.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
-        let dir = fs::File::open(&parent).await.map_err(|e| CopyError::Io {
-            path: parent.clone(),
-            source: e,
-        })?;
-        dir.sync_all().await.map_err(|e| CopyError::Io {
-            path: parent,
-            source: e,
-        })
-    }
-    #[cfg(windows)]
-    {
-        let _ = dst;
-        _warn_once.call_once(|| {
-            warn!("DurabilityPolicy::Full no implementado en Windows todavía; usando File. Ver P1.1.");
-        });
-        Ok(())
-    }
-}
 async fn verify_hash(src: &Path, tmp: &Path, dst_for_error: &Path) -> Result<(), CopyError> {
     let s = hash_file(src).await.map_err(|e| CopyError::Io { path: src.to_path_buf(), source: e })?;
     let d = hash_file(tmp).await.map_err(|e| CopyError::Io { path: tmp.to_path_buf(), source: e })?;
