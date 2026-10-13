@@ -8,6 +8,6 @@ pub mod scanner;
 pub use engine::CopyEngine;
 pub use error::CopyError;
 pub use events::{CopyEvent, Report};
-pub use options::{CopyOptions, OverwritePolicy, VerifyPolicy};
+pub use options::{CopyOptions, DurabilityPolicy, OverwritePolicy, VerifyPolicy};
 pub use plan::{CopyPlan, CopyTask, TaskKind};
 pub use scanner::{build_effective_dest, build_plan, validate_effective_paths, validate_paths};

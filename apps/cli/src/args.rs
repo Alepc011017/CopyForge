@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use clap::{Parser, ValueEnum};
-use copyforge_core::{CopyOptions, OverwritePolicy, VerifyPolicy};
+use copyforge_core::{CopyOptions, DurabilityPolicy, OverwritePolicy, VerifyPolicy};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -23,6 +23,10 @@ pub struct Args {
     /// Verificación post-copia
     #[arg(short = 'c', long, value_enum, default_value_t = VerifyArg::Size)]
     pub verify: VerifyArg,
+
+    /// Durabilidad: trade-off rendimiento ↔ durabilidad
+    #[arg(long, value_enum, default_value_t = DurabilityArg::File)]
+    pub durability: DurabilityArg,
 
     /// Archivos copiados en paralelo
     #[arg(short = 'j', long, default_value_t = 4)]
@@ -71,6 +75,9 @@ pub enum OverwriteArg { Always, Never, IfNewer, IfDifferent }
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum VerifyArg { None, Size, Hash }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum DurabilityArg { None, File, Full }
+
 impl From<OverwriteArg> for OverwritePolicy {
     fn from(a: OverwriteArg) -> Self {
         match a {
@@ -92,6 +99,16 @@ impl From<VerifyArg> for VerifyPolicy {
     }
 }
 
+impl From<DurabilityArg> for DurabilityPolicy {
+    fn from(a: DurabilityArg) -> Self {
+        match a {
+            DurabilityArg::None => DurabilityPolicy::None,
+            DurabilityArg::File => DurabilityPolicy::File,
+            DurabilityArg::Full => DurabilityPolicy::Full,
+        }
+    }
+}
+
 impl Args {
     pub fn to_options(&self) -> CopyOptions {
         CopyOptions {
@@ -105,6 +122,7 @@ impl Args {
             exclusion: self.exclude.clone(),
             allow_symlink_escape: self.allow_symlink_escape,
             max_escape_bytes: None,
+            durability: self.durability.into(),
         }
     }
 }

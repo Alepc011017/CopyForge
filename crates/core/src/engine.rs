@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Once;
 use std::time::Instant;
 
 use tokio::fs;
@@ -11,7 +12,7 @@ use tracing::{debug, warn};
 use crate::{
     error::CopyError,
     events::*,
-    options::{CopyOptions, OverwritePolicy, VerifyPolicy},
+    options::{CopyOptions, DurabilityPolicy, OverwritePolicy, VerifyPolicy},
     plan::{CopyPlan, CopyTask, TaskKind},
 };
 
@@ -39,6 +40,8 @@ impl CopyEngine {
         let _ = self.events_tx.send(CopyEvent::Planned { total_files, total_bytes }).await;
 
         let sem = Arc::new(Semaphore::new(self.options.parallel_files.max(1)));
+        // P0.6a-fix: aviso de Full-en-Windows una sola vez por invocación.
+        let full_warn = Arc::new(Once::new());
         // Fix 2: canal por tareas totales
         let (res_tx, mut res_rx) = mpsc::channel::<FileResult>(total_tasks.max(1));
         let mut handles = Vec::with_capacity(total_tasks);
@@ -54,6 +57,7 @@ impl CopyEngine {
             let rtx = res_tx.clone();
             let cancel = self.cancel.clone();
             let sem = sem.clone();
+            let full_warn = full_warn.clone();
 
             handles.push(tokio::spawn(async move {
                 // P0.3: el permiso se adquiere DENTRO de la tarea para no
@@ -64,7 +68,7 @@ impl CopyEngine {
                     let Ok(_permit) = sem.acquire_owned().await else {
                         return;
                     };
-                    copy_task(&task, &opts, &tx, &cancel).await
+                    copy_task(&task, &opts, &tx, &cancel, full_warn).await
                 };
                 let _ = rtx.send(result).await;
             }));
@@ -128,6 +132,7 @@ async fn copy_task(
     opts: &CopyOptions,
     events: &mpsc::Sender<CopyEvent>,
     cancel: &CancellationToken,
+    full_warn: Arc<Once>,
 ) -> FileResult {
     if cancel.is_cancelled() {
         return FileResult::Failed { path: task.src.clone(), error: CopyError::Cancelled };
@@ -141,8 +146,8 @@ async fn copy_task(
             // Fix 2: no cuenta como archivo
             FileResult::DirCreated
         }
-        TaskKind::Symlink => copy_symlink(task, opts, events, cancel).await,
-        TaskKind::File => copy_file(task, opts, events, cancel).await,
+        TaskKind::Symlink => copy_symlink(task, opts, events, cancel, full_warn).await,
+        TaskKind::File => copy_file(task, opts, events, cancel, full_warn).await,
     }
 }
 
@@ -151,6 +156,7 @@ async fn copy_symlink(
     opts: &CopyOptions,
     events: &mpsc::Sender<CopyEvent>,
     cancel: &CancellationToken,
+    full_warn: Arc<Once>,
 ) -> FileResult {
     if cancel.is_cancelled() {
         return FileResult::Failed { path: task.src.clone(), error: CopyError::Cancelled };
@@ -176,7 +182,7 @@ async fn copy_symlink(
                     size: m.len(),
                     kind: TaskKind::File,
                 };
-                copy_file(&file_task, opts, events, cancel).await
+                copy_file(&file_task, opts, events, cancel, full_warn).await
             }
             Ok(_) => {
                 debug!("symlink especial omitido: {:?}", task.src);
@@ -252,6 +258,7 @@ async fn copy_file(
     opts: &CopyOptions,
     events: &mpsc::Sender<CopyEvent>,
     cancel: &CancellationToken,
+    full_warn: Arc<Once>,
 ) -> FileResult {
     let start = Instant::now();
 
@@ -360,6 +367,13 @@ async fn copy_file(
         let _ = fs::remove_file(&tmp_path).await;
         return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
     }
+
+    // --- durabilidad pre-rename (P0.6a): fsync del temporal según política ---
+    if let Err(e) = apply_durability(opts.durability, &dst, &task.dst).await {
+        drop(dst);
+        let _ = fs::remove_file(&tmp_path).await;
+        return FileResult::Failed { path: task.dst.clone(), error: e };
+    }
     drop(dst);
 
     // --- verificación ---
@@ -397,6 +411,13 @@ async fn copy_file(
         return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
     }
 
+    // --- durabilidad post-rename (P0.6a): solo Full sincroniza el dir padre ---
+    if opts.durability == DurabilityPolicy::Full {
+        if let Err(e) = sync_parent_dir(&task.dst, &full_warn).await {
+            return FileResult::Failed { path: task.dst.clone(), error: e };
+        }
+    }
+
     // Fix 1: progreso final
     let _ = events.send(CopyEvent::Progress {
         path: task.src.clone(),
@@ -424,6 +445,58 @@ async fn atomic_replace(tmp: &Path, dst: &Path) -> std::io::Result<()> {
     fs::rename(tmp, dst).await
 }
 
+/// Fase pre-rename de [`DurabilityPolicy`]: asegura los datos del temporal.
+///
+/// - `None` → nada (comportamiento anterior).
+/// - `File` | `Full` → `sync_all()` del handle abierto, antes del rename.
+///
+/// Sin `unwrap`/`expect`.
+async fn apply_durability(
+    policy: DurabilityPolicy,
+    file: &fs::File,
+    dst: &Path,
+) -> Result<(), CopyError> {
+    match policy {
+        DurabilityPolicy::None => Ok(()),
+        DurabilityPolicy::File | DurabilityPolicy::Full => {
+            file.sync_all().await.map_err(|e| CopyError::Io {
+                path: dst.to_path_buf(),
+                source: e,
+            })
+        }
+    }
+}
+
+/// Fase post-rename de [`DurabilityPolicy`]: solo `Full` sincroniza el
+/// directorio padre para hacer durable el propio rename.
+///
+/// En Windows degrada a `File` (abrir directorios exige
+/// `FILE_FLAG_BACKUP_SEMANTICS`; ver P1.1) con un `warn` emitido una sola
+/// vez por invocación vía `_warn_once`.
+///
+/// Sin `unwrap`/`expect`.
+async fn sync_parent_dir(dst: &Path, _warn_once: &Once) -> Result<(), CopyError> {
+    #[cfg(unix)]
+    {
+        let parent = dst.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+        let dir = fs::File::open(&parent).await.map_err(|e| CopyError::Io {
+            path: parent.clone(),
+            source: e,
+        })?;
+        dir.sync_all().await.map_err(|e| CopyError::Io {
+            path: parent,
+            source: e,
+        })
+    }
+    #[cfg(windows)]
+    {
+        let _ = dst;
+        _warn_once.call_once(|| {
+            warn!("DurabilityPolicy::Full no implementado en Windows todavía; usando File. Ver P1.1.");
+        });
+        Ok(())
+    }
+}
 #[cfg(windows)]
 async fn atomic_replace(tmp: &Path, dst: &Path) -> std::io::Result<()> {
     // En Windows, rename falla si el destino existe → intentar borrar primero.
@@ -501,5 +574,37 @@ mod tests {
         };
         let as_dyn: &dyn std::error::Error = &io_err;
         assert!(as_dyn.source().is_some());
+    }
+
+    async fn run_copy_with_durability(policy: DurabilityPolicy) -> (u64, Vec<u8>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("a.txt");
+        std::fs::write(&src, b"hello-durability").unwrap();
+        let dst = tmp.path().join("out.txt");
+        let opts = CopyOptions {
+            durability: policy,
+            ..CopyOptions::default()
+        };
+        let plan = crate::scanner::build_plan(&src, &dst, &opts).unwrap();
+        let (tx, _rx) = mpsc::channel(64);
+        let engine = CopyEngine::new(opts, tx);
+        let report = engine.run(plan).await;
+        let content = std::fs::read(&dst).unwrap();
+        // tmp vive hasta aquí: la lectura ocurre antes de limpiar el dir.
+        (report.files_copied, content)
+    }
+
+    #[tokio::test]
+    async fn durability_none_copies_content() {
+        let (copied, content) = run_copy_with_durability(DurabilityPolicy::None).await;
+        assert_eq!(copied, 1);
+        assert_eq!(content, b"hello-durability");
+    }
+
+    #[tokio::test]
+    async fn durability_file_copies_content() {
+        let (copied, content) = run_copy_with_durability(DurabilityPolicy::File).await;
+        assert_eq!(copied, 1);
+        assert_eq!(content, b"hello-durability");
     }
 }
