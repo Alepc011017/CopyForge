@@ -1,6 +1,4 @@
 use std::path::Path;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use copyforge_core::{CopyEvent, Report};
@@ -10,8 +8,7 @@ pub struct ProgressUi {
     overall: ProgressBar,
     current: ProgressBar,
     quiet: bool,
-    started: Instant,
-    active: Vec<(String, ProgressBar)>, // path → barra (para multi-archivo)
+    // Fix warn: quitados started/active sin uso
 }
 
 impl ProgressUi {
@@ -44,8 +41,6 @@ impl ProgressUi {
             overall,
             current,
             quiet,
-            started: Instant::now(),
-            active: Vec::new(),
         }
     }
 
@@ -148,6 +143,3 @@ fn print_report(r: &Report) {
     }
     println!("──────────────────────────────────────────");
 }
-
-// Handle opaco para que runner pueda usar Arc si quiere
-pub type SharedUi = Arc<std::sync::Mutex<ProgressUi>>;

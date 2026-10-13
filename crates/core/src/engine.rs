@@ -43,6 +43,11 @@ impl CopyEngine {
         let mut handles = Vec::with_capacity(total_tasks);
 
         for task in plan.tasks {
+            // Fix 5: no spawnea si ya cancelado
+            if self.cancel.is_cancelled() {
+                break;
+            }
+
             let permit = match sem.clone().acquire_owned().await {
                 Ok(p) => p,
                 Err(_) => break,
@@ -63,21 +68,21 @@ impl CopyEngine {
 
         while let Some(result) = res_rx.recv().await {
             match result {
-                FileResult::Copied { bytes, .. } => {
+                FileResult::Copied { bytes } => {
                     report.files_copied += 1;
                     report.bytes_copied += bytes;
                 }
-                // Fix 2: dirs no suman como files
+                // Fix 2: dirs aparte
                 FileResult::DirCreated => {
                     report.dirs_created += 1;
                 }
                 FileResult::Skipped { path, reason } => {
-                    // Fix 3: avisa skip centralizado
+                    // Fix 3: skip centralizado
                     let _ = self.events_tx.send(CopyEvent::FileSkipped { path: path.clone(), reason }).await;
                     report.files_skipped += 1;
                 }
                 FileResult::Failed { path, error } => {
-                    // Fix 3: avisa fallo por evento
+                    // Fix 3: fallo centralizado
                     let _ = self.events_tx.send(CopyEvent::FileFailed { path: path.clone(), error: error.clone() }).await;
                     report.files_failed += 1;
                     report.errors.push((path, error));
@@ -98,8 +103,8 @@ impl CopyEngine {
 }
 
 enum FileResult {
-    Copied { path: PathBuf, bytes: u64 },
-    DirCreated, // Fix 2: separa dirs de files
+    Copied { bytes: u64 }, // Fix 8: solo bytes
+    DirCreated, // Fix 2: separa dirs
     Skipped { path: PathBuf, reason: SkipReason },
     Failed { path: PathBuf, error: String },
 }
@@ -150,12 +155,25 @@ async fn copy_file(
                 ),
                 Err(_) => false,
             },
-            OverwritePolicy::IfDifferent => dst_meta.len() == task.size,
+            OverwritePolicy::IfDifferent => {
+                // Fix 6: compara size + mtime
+                match fs::metadata(&task.src).await {
+                    Ok(src_meta) => {
+                        let same_size = dst_meta.len() == task.size;
+                        let same_mtime = matches!(
+                            (src_meta.modified(), dst_meta.modified()),
+                            (Ok(s), Ok(d)) if s == d
+                        );
+                        same_size && same_mtime
+                    }
+                    Err(_) => false,
+                }
+            },
             OverwritePolicy::Always => false,
         };
 
         if skip {
-            // Fix 3: sin evento aquí, lo envía run()
+            // Fix 3: lo avisa run()
             return FileResult::Skipped { path: task.dst.clone(), reason: SkipReason::AlreadyExists };
         }
     }
@@ -182,7 +200,8 @@ async fn copy_file(
     let tmp_path = tmp_path_for(&task.dst);
     let mut dst = match fs::File::create(&tmp_path).await {
         Ok(f) => f,
-        Err(e) => return FileResult::Failed { path: tmp_path, error: e.to_string() },
+        // Fix 7: reporta dst, no tmp
+        Err(e) => return FileResult::Failed { path: task.dst.clone(), error: e.to_string() },
     };
 
     let mut buf = vec![0u8; opts.buffer_size.max(64 * 1024)];
@@ -267,7 +286,7 @@ async fn copy_file(
         return FileResult::Failed { path: task.dst.clone(), error: e.to_string() };
     }
 
-    // Fix 1: progreso final para archivos pequeños
+    // Fix 1: progreso final
     let _ = events.send(CopyEvent::Progress {
         path: task.src.clone(),
         bytes_copied: copied,
@@ -278,7 +297,8 @@ async fn copy_file(
         elapsed: start.elapsed(),
     }).await;
 
-    FileResult::Copied { path: task.dst.clone(), bytes: copied }
+    // Fix 8: sin path sin uso
+    FileResult::Copied { bytes: copied }
 }
 
 fn tmp_path_for(dst: &Path) -> PathBuf {
