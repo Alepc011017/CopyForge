@@ -15,4 +15,7 @@ pub enum CopyError {
 
     #[error("cancelado")]
     Cancelled,
+
+    #[error("destino inválido: {reason}")]
+    InvalidDestination { reason: String },
 }

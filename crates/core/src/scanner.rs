@@ -51,7 +51,66 @@ pub fn build_effective_dest(src: &Path, dst: &Path) -> std::io::Result<PathBuf> 
     }
 }
 
+/// Valida que la pareja `(src, dst)` no sea autodestructiva.
+///
+/// - `src == dst` → `InvalidDestination("src and dst are the same")`.
+/// - `dst` dentro de `src` → `InvalidDestination("dst is inside src")`
+///   (recursión explosiva: el destino crecería mientras se copia).
+/// - `src` dentro de `dst` es **válido** (no error).
+///
+/// Usa `canonicalize` cuando los paths existen (resuelve symlinks, `.`/`..`
+/// y rutas largas de Windows). Si un path no existe, canonaliza el ancestro
+/// existente más cercano y re-anexa el resto, así `dst` inexistente pero
+/// interior a `src` también se detecta. Sin `unwrap`/`expect`.
+pub fn validate_paths(src: &Path, dst: &Path) -> Result<(), CopyError> {
+    let src_c = canonicalize_lossy(src);
+    let dst_c = canonicalize_lossy(dst);
+    if src_c == dst_c {
+        return Err(CopyError::InvalidDestination {
+            reason: "src and dst are the same".into(),
+        });
+    }
+    if dst_c.starts_with(&src_c) {
+        return Err(CopyError::InvalidDestination {
+            reason: "dst is inside src".into(),
+        });
+    }
+    Ok(())
+}
+
+fn canonicalize_lossy(p: &Path) -> PathBuf {
+    let mut cur = p.to_path_buf();
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        match cur.canonicalize() {
+            Ok(c) => {
+                let mut out = c;
+                for comp in missing.iter().rev() {
+                    out.push(comp);
+                }
+                return out;
+            }
+            Err(_) => {
+                let Some(name) = cur.file_name().map(|s| s.to_os_string()) else {
+                    return p.to_path_buf();
+                };
+                let Some(parent) = cur.parent().map(Path::to_path_buf) else {
+                    return p.to_path_buf();
+                };
+                if parent == cur {
+                    return p.to_path_buf();
+                }
+                missing.push(name);
+                cur = parent;
+            }
+        }
+    }
+}
+
 pub fn build_plan(src: &Path, dst: &Path, options: &CopyOptions) -> Result<CopyPlan, CopyError> {
+    // P0.5: validar antes de cualquier IO (H-4): src==dst y dst⊂src.
+    validate_paths(src, dst)?;
+
     if !src.exists() {
         return Err(CopyError::SourceNotFound(src.to_path_buf()));
     }
@@ -221,5 +280,47 @@ mod tests {
         std::fs::create_dir(&src_dir).unwrap();
         let dst = tmp.path().join("newdir");
         assert_eq!(build_effective_dest(&src_dir, &dst).unwrap(), dst);
+    }
+
+    #[test]
+    fn validate_rejects_same_src_dst() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("a.txt");
+        write_file(&src);
+        let err = match validate_paths(&src, &src) {
+            Ok(()) => panic!("expected InvalidDestination"),
+            Err(e) => e,
+        };
+        match err {
+            CopyError::InvalidDestination { reason } => assert!(reason.contains("same")),
+            _ => panic!("expected InvalidDestination"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_dst_inside_src() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("mydir");
+        std::fs::create_dir(&src).unwrap();
+        // dst inexistente pero interior: ejercita canonicalize_lossy del padre.
+        let dst = src.join("child");
+        let err = match validate_paths(&src, &dst) {
+            Ok(()) => panic!("expected InvalidDestination"),
+            Err(e) => e,
+        };
+        match err {
+            CopyError::InvalidDestination { reason } => assert!(reason.contains("inside")),
+            _ => panic!("expected InvalidDestination"),
+        }
+    }
+
+    #[test]
+    fn validate_allows_src_inside_dst() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dst = tmp.path().join("out");
+        std::fs::create_dir(&dst).unwrap();
+        let src = dst.join("inner");
+        std::fs::create_dir(&src).unwrap();
+        assert!(validate_paths(&src, &dst).is_ok());
     }
 }

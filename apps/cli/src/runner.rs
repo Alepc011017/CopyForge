@@ -1,13 +1,17 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use copyforge_core::{build_plan, CopyEngine, CopyEvent};
+use copyforge_core::{build_plan, validate_paths, CopyEngine, CopyEvent};
 use tokio::sync::mpsc;
 
 use crate::{args::Args, ui::ProgressUi};
 
 pub async fn run(args: Args) -> Result<()> {
     let opts = args.to_options();
+
+    // 0) Validación temprana (P0.5): src==dst y dst⊂src, antes de cualquier IO.
+    validate_paths(&args.source, &args.dest)
+        .with_context(|| format!("rutas inválidas: {} -> {}", args.source.display(), args.dest.display()))?;
 
     // 1) Plan
     let plan = build_plan(&args.source, &args.dest, &opts)

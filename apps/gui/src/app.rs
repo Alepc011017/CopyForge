@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::thread::JoinHandle;
 
-use copyforge_core::{build_plan, CopyEngine, CopyEvent, CopyOptions, Report};
+use copyforge_core::{build_plan, validate_paths, CopyEngine, CopyEvent, CopyOptions, Report};
 
 // Estado de copia en curso
 struct CopyState {
@@ -55,6 +55,11 @@ impl CopyForgeApp {
         self.dest = Self::clean_path(&self.dest.clone());
         let src = PathBuf::from(self.source.trim());
         let dst = PathBuf::from(self.dest.trim());
+        // P0.5: validación temprana con mensaje claro, antes del engine.
+        if let Err(e) = validate_paths(&src, &dst) {
+            self.status = format!("Rutas inválidas: {e}");
+            return;
+        }
         let opts = CopyOptions::default();
 
         let plan = match build_plan(&src, &dst, &opts) {
