@@ -13,14 +13,15 @@
 - **P0.3** ✅ Hecho — Concurrencia real: `acquire_owned()` movido DENTRO del `tokio::spawn` en `crates/core/src/engine.rs:58-68`. Paralelismo real sin deadlock (uso único del semáforo, N>=1, sin adquisición anidada, guard liberado al terminar `copy_task`). Commit: `3e33111`.
 - **P0.4** ✅ Hecho — Error tipado: `FileResult::Failed{CopyError}` (interno, no breaking) en `crates/core/src/engine.rs`; `VerifyFailed` en Size/Hash y `Cancelled` en cancelación; `#[non_exhaustive]` en `CopyError`. Frontera pública (`CopyEvent::FileFailed`, `Report.errors`) sigue `String` vía `to_string()` — ver nota breaking abajo. Commit: `3e33111`.
 - **P0.5** ⏳ Pendiente — Validación `src==dst` y `dst⊂src` (H-4): abortar antes de `build_plan` con `CopyError::InvalidDestination`. Afecta `crates/core/src/scanner.rs:11-14`, `apps/cli/src/runner.rs`, `apps/gui/src/app.rs`.
-- **P0.6** ⏳ Pendiente — Integridad: `sync_all()` en el archivo temporal antes del rename, y `sync_all()` del directorio padre tras el rename en Unix (H-2). Afecta `crates/core/src/engine.rs:350-355`.
+- **P0.6a** ✅ Hecho — `DurabilityPolicy { None, File, Full }` (default `File`; cambio documentado respecto al anterior equivalente a `None`): `apply_durability` con `sync_all` del temporal pre-rename para `File|Full`; `sync_parent_dir` post-rename solo en `Full` (Unix; Windows degrada a `File` con `warn` una sola vez por invocación vía `Arc<Once>` creado en `run()`). CLI `--durability <none|file|full>` (default `file`). 2 tests de contenido. Sin commitear todavía.
+- **P0.6b** ⏳ Pendiente (siguiente paso) — Test de integración: con `Full` en Unix, verificar que el directorio padre se sincroniza.
 - **P0.7** ⏳ Pendiente — Cap en `report.errors`: limitar a 1000 entradas + campo `errors_truncated: usize` (H-7). Afecta `crates/core/src/engine.rs:89-93`, `crates/core/src/events.rs`.
 - **P0.8** ✅ Hecho — `src` symlink roto como raíz: el gate `!src.exists()` lo rechazaba con `SourceNotFound` aunque el enlace es recreable; además WalkDir falla con NotFound en profundidad 0. Gate con `symlink_metadata` + rama de tarea `Symlink` única en `crates/core/src/scanner.rs`. Test `build_plan_accepts_broken_symlink_src` + copia real verificada (`Enlaces creados: 1`). Commit: `8974688`.
 - **P0.9** ✅ Hecho — Escape con `follow_symlinks=true` (default seguro + opt-in): `SymlinkEscapesSource{path,target}` si el target resuelto queda fuera de `src`; flag `allow_symlink_escape` en `CopyOptions` (default `false`), CLI `--allow-symlink-escape`, checkbox GUI “Permitir symlinks fuera de src”; cap `max_escape_bytes: Option<u64>` con `EscapeCapExceeded{limit,current}` (defensa en profundidad). 3 tests nuevos. Sin commitear todavía.
 
 ## P1 — Capa multiplataforma y robustez de temporales
 
-- **P1.1** ⏳ Pendiente — Crear `crates/core/src/platform.rs` con: `symlink_file`, `symlink_dir`, `set_readonly`, `set_times`, `is_hidden`, `canonicalize_long`, `atomic_replace`.
+- **P1.1** ⏳ Pendiente — Crear `crates/core/src/platform.rs` con: `symlink_file`, `symlink_dir`, `set_readonly`, `set_times`, `is_hidden`, `canonicalize_long`, `atomic_replace`, `sync_dir` (abrir dir con `FILE_FLAG_BACKUP_SEMANTICS` para implementar `DurabilityPolicy::Full` en Windows).
 - **P1.2** ⏳ Pendiente — `atomic_replace` Windows con `ReplaceFileW` + fallback a `MoveFileExW` si `ERROR_FILE_NOT_FOUND`. En Unix mantiene `rename`. Sustituye `remove+rename` actual en `engine.rs:419-430`.
 - **P1.3** ⏳ Pendiente — `preserve_metadata` completo: `mtime` + `mode` en Unix; `readonly` + `mtime` en Windows. Incluye H-1 (mtime roto en `IfDifferent`/`IfNewer`). Afecta `engine.rs:380-384`.
 - **P1.4** ⏳ Pendiente — Temporales robustos (H-3): `tempfile::NamedTempFile` en el mismo directorio + limpieza de huérfanos `*.copyforge.tmp` al inicio. Excluir el patrón en `scanner.rs:118-122`.
@@ -42,7 +43,7 @@
 
 ## Hallazgos resueltos (integrados arriba)
 - H-1 → P1.3
-- H-2 → P0.6
+- H-2 → P0.6a (DurabilityPolicy; Full en Windows → P1.1) + P0.6b (test integración)
 - H-3 → P1.4
 - H-4 → P0.5
 - H-5 → P2.3

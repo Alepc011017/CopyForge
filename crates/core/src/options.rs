@@ -14,6 +14,10 @@ pub struct CopyOptions {
     /// P0.9: cap opcional (bytes) del árbol externo cuando
     /// `allow_symlink_escape=true`. Defensa en profundidad; default `None`.
     pub max_escape_bytes: Option<u64>,
+    /// P0.6a: trade-off explícito rendimiento ↔ durabilidad.
+    /// Default `File` (cambio respecto al comportamiento anterior,
+    /// que equivalía a `None`).
+    pub durability: DurabilityPolicy,
 }
 
 impl Default for CopyOptions {
@@ -29,6 +33,7 @@ impl Default for CopyOptions {
             exclusion: Vec::new(),
             allow_symlink_escape: false,
             max_escape_bytes: None,
+            durability: DurabilityPolicy::default(),
         }
     }
 }
@@ -38,3 +43,16 @@ pub enum OverwritePolicy { Always, Never, IfNewer, IfDifferent }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyPolicy { None, Size, Hash }
+
+/// Política de durabilidad: trade-off explícito rendimiento ↔ durabilidad.
+///
+/// | Variante | fsync fichero (pre-rename) | fsync dir padre (post-rename) | Ante caída de SOP / corte de luz |
+/// |---|---|---|---|
+/// | `None` | no | no | puede perderse el fichero (comportamiento anterior) |
+/// | `File` (default) | sí (`sync_all` del temporal) | no | contenido durable; la entrada del directorio puede perderse → fichero ausente, nunca corrupto |
+/// | `Full` | sí | sí (Unix; en Windows degrada a `File` hasta P1.1) | ni el dato ni el nombre se pierden (semántica TeraCopy) |
+///
+/// Coste: ~1 `fsync` por fichero en `File`; +1 por directorio padre en `Full`
+/// (más lento en HDD/NFS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DurabilityPolicy { None, #[default] File, Full }
