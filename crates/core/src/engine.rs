@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::{
+    error::CopyError,
     events::*,
     options::{CopyOptions, OverwritePolicy, VerifyPolicy},
     plan::{CopyPlan, CopyTask, TaskKind},
@@ -48,19 +49,23 @@ impl CopyEngine {
                 break;
             }
 
-            let permit = match sem.clone().acquire_owned().await {
-                Ok(p) => p,
-                Err(_) => break,
-            };
-
             let opts = self.options.clone();
             let tx = self.events_tx.clone();
             let rtx = res_tx.clone();
             let cancel = self.cancel.clone();
+            let sem = sem.clone();
 
             handles.push(tokio::spawn(async move {
-                let _permit = permit;
-                let result = copy_task(&task, &opts, &tx, &cancel).await;
+                // P0.3: el permiso se adquiere DENTRO de la tarea para no
+                // serializar el arranque. Sin deadlock: el semáforo solo se
+                // usa aquí, con N>=1 permisos, sin adquisición anidada.
+                // Se libera justo tras copy_task, antes del send.
+                let result = {
+                    let Ok(_permit) = sem.acquire_owned().await else {
+                        return;
+                    };
+                    copy_task(&task, &opts, &tx, &cancel).await
+                };
                 let _ = rtx.send(result).await;
             }));
         }
@@ -87,10 +92,13 @@ impl CopyEngine {
                     report.files_skipped += 1;
                 }
                 FileResult::Failed { path, error } => {
-                    // Fix 3: fallo centralizado
-                    let _ = self.events_tx.send(CopyEvent::FileFailed { path: path.clone(), error: error.clone() }).await;
+                    // Fix 3: fallo centralizado. Frontera tipada→display:
+                    // FileResult lleva CopyError; el evento/reporte públicos
+                    // siguen siendo String para no romper la API.
+                    let msg = error.to_string();
+                    let _ = self.events_tx.send(CopyEvent::FileFailed { path: path.clone(), error: msg.clone() }).await;
                     report.files_failed += 1;
-                    report.errors.push((path, error));
+                    report.errors.push((path, msg));
                     if !self.options.continue_on_error {
                         warn!("cancelando por error (continue_on_error=false)");
                         self.cancel.cancel();
@@ -112,7 +120,7 @@ enum FileResult {
     DirCreated, // Fix 2: separa dirs
     Symlinked { src: PathBuf, dst: PathBuf },
     Skipped { path: PathBuf, reason: SkipReason },
-    Failed { path: PathBuf, error: String },
+    Failed { path: PathBuf, error: CopyError },
 }
 
 async fn copy_task(
@@ -122,13 +130,13 @@ async fn copy_task(
     cancel: &CancellationToken,
 ) -> FileResult {
     if cancel.is_cancelled() {
-        return FileResult::Failed { path: task.src.clone(), error: "cancelled".into() };
+        return FileResult::Failed { path: task.src.clone(), error: CopyError::Cancelled };
     }
 
     match task.kind {
         TaskKind::Dir => {
             if let Err(e) = fs::create_dir_all(&task.dst).await {
-                return FileResult::Failed { path: task.dst.clone(), error: e.to_string() };
+                return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
             }
             // Fix 2: no cuenta como archivo
             FileResult::DirCreated
@@ -145,7 +153,7 @@ async fn copy_symlink(
     cancel: &CancellationToken,
 ) -> FileResult {
     if cancel.is_cancelled() {
-        return FileResult::Failed { path: task.src.clone(), error: "cancelled".into() };
+        return FileResult::Failed { path: task.src.clone(), error: CopyError::Cancelled };
     }
 
     if opts.follow_symlinks {
@@ -156,7 +164,7 @@ async fn copy_symlink(
         match fs::metadata(&task.src).await {
             Ok(m) if m.is_dir() => {
                 if let Err(e) = fs::create_dir_all(&task.dst).await {
-                    return FileResult::Failed { path: task.dst.clone(), error: e.to_string() };
+                    return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
                 }
                 debug!("symlink dir seguido, dir asegurado: {:?} -> {:?}", task.src, task.dst);
                 FileResult::DirCreated
@@ -174,18 +182,18 @@ async fn copy_symlink(
                 debug!("symlink especial omitido: {:?}", task.src);
                 FileResult::Skipped { path: task.src.clone(), reason: SkipReason::Excluded }
             }
-            Err(e) => FileResult::Failed { path: task.src.clone(), error: e.to_string() },
+            Err(e) => FileResult::Failed { path: task.src.clone(), error: CopyError::Io { path: task.src.clone(), source: e } },
         }
     } else {
         // Recrear el enlace sin seguirlo.
         let link_target = match fs::read_link(&task.src).await {
             Ok(p) => p,
-            Err(e) => return FileResult::Failed { path: task.src.clone(), error: e.to_string() },
+            Err(e) => return FileResult::Failed { path: task.src.clone(), error: CopyError::Io { path: task.src.clone(), source: e } },
         };
 
         if let Some(parent) = task.dst.parent() {
             if let Err(e) = fs::create_dir_all(parent).await {
-                return FileResult::Failed { path: task.dst.clone(), error: e.to_string() };
+                return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
             }
         }
 
@@ -196,7 +204,7 @@ async fn copy_symlink(
                 }
                 _ => {
                     if let Err(e) = remove_existing_dst(&task.dst).await {
-                        return FileResult::Failed { path: task.dst.clone(), error: e.to_string() };
+                        return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
                     }
                 }
             }
@@ -205,7 +213,7 @@ async fn copy_symlink(
         #[cfg(unix)]
         {
             if let Err(e) = std::os::unix::fs::symlink(&link_target, &task.dst) {
-                return FileResult::Failed { path: task.dst.clone(), error: e.to_string() };
+                return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
             }
         }
 
@@ -218,7 +226,7 @@ async fn copy_symlink(
                 std::os::windows::fs::symlink_file(&link_target, &task.dst)
             };
             if let Err(e) = res {
-                return FileResult::Failed { path: task.dst.clone(), error: e.to_string() };
+                return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
             }
         }
 
@@ -289,14 +297,14 @@ async fn copy_file(
     // --- asegurar directorio padre ---
     if let Some(parent) = task.dst.parent() {
         if let Err(e) = fs::create_dir_all(parent).await {
-            return FileResult::Failed { path: task.dst.clone(), error: e.to_string() };
+            return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
         }
     }
 
     // --- abrir origen ---
     let mut src = match fs::File::open(&task.src).await {
         Ok(f) => f,
-        Err(e) => return FileResult::Failed { path: task.src.clone(), error: e.to_string() },
+        Err(e) => return FileResult::Failed { path: task.src.clone(), error: CopyError::Io { path: task.src.clone(), source: e } },
     };
 
     // --- escribir a archivo temporal (atomicidad + resume-friendly) ---
@@ -304,7 +312,7 @@ async fn copy_file(
     let mut dst = match fs::File::create(&tmp_path).await {
         Ok(f) => f,
         // Fix 7: reporta dst, no tmp
-        Err(e) => return FileResult::Failed { path: task.dst.clone(), error: e.to_string() },
+        Err(e) => return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } },
     };
 
     let mut buf = vec![0u8; opts.buffer_size.max(64 * 1024)];
@@ -315,7 +323,7 @@ async fn copy_file(
         if cancel.is_cancelled() {
             drop(dst);
             let _ = fs::remove_file(&tmp_path).await;
-            return FileResult::Failed { path: task.src.clone(), error: "cancelled".into() };
+            return FileResult::Failed { path: task.src.clone(), error: CopyError::Cancelled };
         }
 
         let n = match src.read(&mut buf).await {
@@ -324,14 +332,14 @@ async fn copy_file(
             Err(e) => {
                 drop(dst);
                 let _ = fs::remove_file(&tmp_path).await;
-                return FileResult::Failed { path: task.src.clone(), error: e.to_string() };
+                return FileResult::Failed { path: task.src.clone(), error: CopyError::Io { path: task.src.clone(), source: e } };
             }
         };
 
         if let Err(e) = dst.write_all(&buf[..n]).await {
             drop(dst);
             let _ = fs::remove_file(&tmp_path).await;
-            return FileResult::Failed { path: task.dst.clone(), error: e.to_string() };
+            return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
         }
 
         copied += n as u64;
@@ -350,7 +358,7 @@ async fn copy_file(
     if let Err(e) = dst.flush().await {
         drop(dst);
         let _ = fs::remove_file(&tmp_path).await;
-        return FileResult::Failed { path: task.dst.clone(), error: e.to_string() };
+        return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
     }
     drop(dst);
 
@@ -363,15 +371,15 @@ async fn copy_file(
                     let _ = fs::remove_file(&tmp_path).await;
                     return FileResult::Failed {
                         path: task.dst.clone(),
-                        error: format!("size mismatch: {} != {}", m.len(), task.size),
+                        error: CopyError::VerifyFailed(task.dst.clone()),
                     };
                 }
             }
         }
         VerifyPolicy::Hash => {
-            if let Err(e) = verify_hash(&task.src, &tmp_path).await {
+            if let Err(e) = verify_hash(&task.src, &tmp_path, &task.dst).await {
                 let _ = fs::remove_file(&tmp_path).await;
-                return FileResult::Failed { path: task.dst.clone(), error: format!("verify: {e}") };
+                return FileResult::Failed { path: task.dst.clone(), error: e };
             }
         }
     }
@@ -386,7 +394,7 @@ async fn copy_file(
     // --- rename atómico ---
     if let Err(e) = atomic_replace(&tmp_path, &task.dst).await {
         let _ = fs::remove_file(&tmp_path).await;
-        return FileResult::Failed { path: task.dst.clone(), error: e.to_string() };
+        return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
     }
 
     // Fix 1: progreso final
@@ -429,10 +437,10 @@ async fn atomic_replace(tmp: &Path, dst: &Path) -> std::io::Result<()> {
     }
 }
 
-async fn verify_hash(src: &Path, dst: &Path) -> Result<(), String> {
-    let s = hash_file(src).await.map_err(|e| e.to_string())?;
-    let d = hash_file(dst).await.map_err(|e| e.to_string())?;
-    if s != d { return Err("hash mismatch".into()); }
+async fn verify_hash(src: &Path, tmp: &Path, dst_for_error: &Path) -> Result<(), CopyError> {
+    let s = hash_file(src).await.map_err(|e| CopyError::Io { path: src.to_path_buf(), source: e })?;
+    let d = hash_file(tmp).await.map_err(|e| CopyError::Io { path: tmp.to_path_buf(), source: e })?;
+    if s != d { return Err(CopyError::VerifyFailed(dst_for_error.to_path_buf())); }
     Ok(())
 }
 
@@ -447,4 +455,51 @@ async fn hash_file(path: &Path) -> std::io::Result<[u8; 32]> {
         hasher.update(&buf[..n]);
     }
     Ok(*hasher.finalize().as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_std_error<T: std::error::Error + std::fmt::Display>() {}
+
+    #[test]
+    fn failed_cancelled_constructs() {
+        let r = FileResult::Failed {
+            path: PathBuf::from("/tmp/a"),
+            error: CopyError::Cancelled,
+        };
+        match r {
+            FileResult::Failed { error: CopyError::Cancelled, .. } => {}
+            _ => panic!("expected Failed(Cancelled)"),
+        }
+    }
+
+    #[test]
+    fn failed_verify_failed_constructs() {
+        let p = PathBuf::from("/tmp/b");
+        let r = FileResult::Failed {
+            path: p.clone(),
+            error: CopyError::VerifyFailed(p.clone()),
+        };
+        match r {
+            FileResult::Failed { error: CopyError::VerifyFailed(q), .. } => assert_eq!(q, p),
+            _ => panic!("expected Failed(VerifyFailed)"),
+        }
+    }
+
+    #[test]
+    fn copy_error_is_std_error_and_display() {
+        assert_std_error::<CopyError>();
+        let cancelled = CopyError::Cancelled;
+        assert_eq!(format!("{cancelled}"), "cancelado");
+        let failed = CopyError::VerifyFailed(PathBuf::from("/x/y"));
+        assert!(format!("{failed}").contains("/x/y"));
+        let io_err = CopyError::Io {
+            path: PathBuf::from("/z"),
+            source: std::io::Error::other("boom"),
+        };
+        let as_dyn: &dyn std::error::Error = &io_err;
+        assert!(as_dyn.source().is_some());
+    }
 }
