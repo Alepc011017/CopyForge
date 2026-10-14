@@ -76,6 +76,7 @@
 - Cada paso se commitea al terminar: `git commit -m "P0.X: <descripción>"`.
 - Al cerrar cada paso, actualizar este PLAN.md con el hash del commit.
 - Si el agente se desvía, recordarle: "Estamos en P0.X, solo ese archivo".
+- Un import no usado en `#[cfg(test)]` tumba el job (el CI compila los tests con `CARGO_BUILD_WARNINGS=deny`). Antes de cada commit, ejecutar `CARGO_BUILD_WARNINGS=deny cargo test --workspace --no-run` en local. Ojo: lo gateado por SO (`#[cfg(unix)]`) no se detecta en local; preferir tests portables y dejar el CI Windows como detector de lo específico.
 - Nota breaking P0.3/P0.4: `FileResult` es privado (sin break). `CopyEvent`/`Report` mantienen `String` (sin break en repo). Único break intencional: `#[non_exhaustive]` en `CopyError` — externos con `match` exhaustivo deberán añadir wildcard.
 - Detectado un bloque duplicado durante P1.6 (origen: edit propio de P1.6 en working tree, sin commitear; detectado y reparado en la misma sesión — ningún commit lo contuvo, verificado por conteo en `git show`). Era además error de sintaxis (`else` huérfano), así que `cargo check` lo habría rechazado igualmente. cargo check no detecta duplicados funcionales; conviene revisar diff manualmente cuando un paso grande añade bloques.
 ### P3 — Tests y robustez

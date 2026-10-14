@@ -131,7 +131,9 @@ mod tests {
     // Nota honesta: el pre-cancelado cortocircuita el spawn y el reporte
     // queda vacío (exit 0); la cancelación a mitad de copia sí genera
     // Failed(Cancelled) → exit 1 (verificado manualmente con Ctrl-C).
-    #[cfg(unix)]
+    // Sin gate por SO a propósito: solo usa APIs portables, así compila y
+    // corre también en el CI Windows (un #[cfg(unix)] dejaría el import y
+    // el helper muertos allí y tumbaría el job con deny).
     #[tokio::test]
     async fn cancelled_token_copies_nothing() {
         let dir = test_dir("cancel");
