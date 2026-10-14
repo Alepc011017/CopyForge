@@ -20,6 +20,15 @@ pub enum CopyEvent {
 #[derive(Debug, Clone, Copy)]
 pub enum SkipReason { AlreadyExists, Identical, Excluded }
 
+/// Reporte final de una ejecución del motor.
+///
+/// Invariante de conteo:
+/// total_ops = files_copied + dirs_created + symlinks_created + skipped + failed
+///
+/// NOTA: `symlinks_fallback` es un subconjunto de `files_copied` + `dirs_created`,
+/// no una categoría disjunta. Los archivos copiados por fallback cuentan en `files_copied`
+/// (o `dirs_created` si son directorios) porque el contenido SÍ se copió. NO sumar
+/// `files_copied + symlinks_fallback.len()`: cuenta doble.
 #[derive(Debug, Clone, Default)]
 pub struct Report {
     pub files_copied: u64,
