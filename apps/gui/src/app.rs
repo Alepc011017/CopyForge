@@ -142,6 +142,9 @@ impl CopyForgeApp {
                         }
                         CopyEvent::FileCompleted { .. } => {}
                         CopyEvent::Symlinked { .. } => {}
+                        CopyEvent::SymlinkFallback { .. } => {
+                            // El reporte final lleva el detalle (r.symlinks_fallback).
+                        }
                         CopyEvent::Finished { report } => {
                             st.copied_bytes = st.total_bytes.min(
                                 st.copied_bytes.max(report.bytes_copied),
@@ -352,6 +355,15 @@ impl eframe::App for CopyForgeApp {
                             r.errors_truncated,
                             r.errors.len() + r.errors_truncated
                         ));
+                    }
+                    if !r.symlinks_fallback.is_empty() {
+                        ui.collapsing("Enlaces con fallback", |ui| {
+                            egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
+                                for (s, d) in r.symlinks_fallback.iter().take(50) {
+                                    ui.monospace(format!("{} -> {}", s.display(), d.display()));
+                                }
+                            });
+                        });
                     }
                     if ui.button("Nueva copia").clicked() {
                         self.state = None;

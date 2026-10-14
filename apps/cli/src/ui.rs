@@ -93,6 +93,11 @@ impl ProgressUi {
             CopyEvent::Symlinked { .. } => {
                 // Los enlaces no pesan: no avanzan el overall.
             }
+            CopyEvent::SymlinkFallback { path, target, reason } => {
+                self.multi.suspend(|| {
+                    eprintln!("~ {} -> {} (enlace copiado como contenido: {})", path.display(), target.display(), reason);
+                });
+            }
             CopyEvent::Finished { report } => {
                 self.overall.finish_and_clear();
                 if !self.current.is_hidden() {
@@ -132,6 +137,12 @@ fn print_report(r: &Report) {
     println!("  Archivos copiados : {}", r.files_copied);
     println!("  Dirs creados      : {}", r.dirs_created); // Fix 2: muestra dirs
     println!("  Enlaces creados   : {}", r.symlinks_created);
+    if !r.symlinks_fallback.is_empty() {
+        println!("  Enlaces con fallback: {}", r.symlinks_fallback.len());
+        for (s, d) in r.symlinks_fallback.iter().take(10) {
+            println!("    ~ {} -> {}", s.display(), d.display());
+        }
+    }
     println!("  Archivos omitidos : {}", r.files_skipped);
     println!("  Archivos fallidos : {}", r.files_failed);
     println!("  Bytes copiados    : {}", format_size(r.bytes_copied, BINARY));

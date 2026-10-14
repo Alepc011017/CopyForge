@@ -30,7 +30,7 @@
 - **P1.3** ✅ Hecho — `preserve_metadata` (renombrado desde `preserve_permissions`): mode Unix (existente), mtime+atime vía `filetime 0.2` post-rename (best-effort + debug), readonly en Windows si el origen lo era. Skips `IfNewer/IfDifferent` ahora emiten `Identical` (`Never` sigue `AlreadyExists`). 2 tests (mtime ±1s; segunda pasada `IfDifferent` no copia). Sin commitear todavía.
 - **P1.4** ✅ Hecho — Temporales robustos (H-3): `NamedTempFile` con prefijo `.copyforge-tmp-` en el mismo dir que `dst` (mismo FS → rename atómico); `into_temp_path` + `keep()` tras éxito (sin `persist()`, conserva `ReplaceFileW`); auto-borrado por `Drop` en fallos; limpieza al inicio de `run()` (padres de tareas, 1 nivel, solo >1h para no tocar copias concurrentes). Sin commitear todavía.
 - **P1.5** ✅ Hecho — Globs cross-platform: `GlobBuilder::literal_separator(true)` (estilo `.gitignore`; vive en `GlobBuilder`, no en `GlobSetBuilder`) + `normalize_for_glob` vía `components()` con `/`. 3 tests (target/**, normalize, symlink-a-dir). Sin commitear todavía.
-- **P1.6** ⏳ Pendiente — Fallback de symlink en Windows (H-6): si `symlink_file`/`symlink_dir` devuelve `EACCES`, copiar contenido + emitir `CopyEvent::SymlinkFallback` con warning. Afecta `engine.rs:212-223`.
+- **P1.6** ✅ Hecho — Fallback de symlink en Windows (H-6): `platform::is_privilege_error` (`PermissionDenied` + crudos 5/1314, verificado en fuente `windows 0.61.3`); al fallar por privilegio se copia el contenido (vía follow) con `CopyEvent::SymlinkFallback` + `Report.symlinks_fallback`; render CLI/GUI. Sub-caso symlink-roto-a-dir: limitación conocida sin fix (el enlace no almacena su tipo; TODO(P1.6) en código). Sin commitear todavía.
   - Sub-caso: symlink roto apuntando a directorio en Windows → se recrea como file. Sin heurística fiable; documentar como limitación conocida y valorar fallback a copia del target o warning.
 - **P1.7** ⏳ Pendiente — Validación insensible a mayúsculas (H-8): `validate_paths`/`validate_effective_paths` comparan byte a byte; en Windows/macOS `C:\Foo` y `c:\foo` son el mismo dir y bypassearían el chequeo. Normalizar caja al canonalizar en `platform.rs` (P1.1) cuando se cree.
 - **P1.8** ⏳ Pendiente — Falso positivo menor (H-9): `src` symlink cuyo target es el `dst` (p. ej. `L→/real`, `dst=/real`) se rechaza como “same” aunque el efectivo (`/real/L`) sería válido. Workaround: pasar el `dst` explícito (`/real/L`). Mejora futura: no seguir el componente final symlink en `canonicalize_lossy` teniendo en cuenta `follow_symlinks`.
@@ -54,7 +54,7 @@
 - H-3 → P1.4 ✅ (temporales con prefijo + limpieza con gate de antigüedad)
 - H-4 → P0.5
 - H-5 → P2.3
-- H-6 → P1.6
+- H-6 → P1.6 ✅ (fallback a contenido + SymlinkFallback; sub-caso roto-a-dir: limitación conocida)
 - H-7 → P0.7
 - H-8 → P1.7 (validación case-insensitive en Windows/macOS)
 - H-9 → P1.8 (falso positivo symlink-src→target-dir, con workaround)
@@ -84,7 +84,7 @@
 - **H-3 (P0)** — Temporales huérfanos (`*.copyforge.tmp`): resuelto en P1.4 con `NamedTempFile` (prefijo `.copyforge-tmp-`, auto-borrado) + limpieza al inicio de `run()` con gate >1h. Nota: el walk es anterior a la limpieza; un huérfano planificado falla de forma benigna (ver doc en `build_plan`). Estado: ✅ Hecho.
 - **H-4 (P0)** — Sin validación `src==dst` ni `dst dentro de src`: riesgo de recursión explosiva/autosobrescritura. Afectado: `crates/core/src/scanner.rs:11-14`, `apps/cli/src/runner.rs`, `apps/gui/src/app.rs`. Estado: ⏳ Pendiente.
 - **H-5 (P2)** — El progreso nunca llega a 100% con skips: `total_bytes` se calcula en el plan (`crates/core/src/engine.rs:34-36`) pero `Never/IfDifferent` luego saltan ficheros sin restar. Afectado además: `apps/cli/src/ui.rs`, `apps/gui/src/app.rs:303-307`. Estado: ⏳ Pendiente.
-- **H-6 (P1)** — Symlink en Windows exige privilegio/Developer Mode. Falta fallback a “copiar contenido + warning” si da `EACCES`. Afectado: `crates/core/src/engine.rs:212-223`. Estado: ⏳ Pendiente.
+- **H-6 (P1)** — Symlink en Windows exige privilegio/Developer Mode. Resuelto en P1.6 con fallback a copiar contenido + `SymlinkFallback` (clasificador `PermissionDenied` + 5/1314). Sub-caso symlink-roto-a-dir: limitación conocida sin fix. Estado: ✅ Hecho.
 - **H-7 (P0)** — `report.errors` sin cota: con millones de fallos puede agotar memoria. Capar (p.ej. 1000) + contador `errors_truncated`. Afectado: `crates/core/src/engine.rs:89-93`, `crates/core/src/events.rs`. Estado: ⏳ Pendiente.
 - **H-11 (P2)** — Semántica dir→dir existente no es idempotente:
   - Causa: `build_effective_dest` anida `dst/src` cuando `dst` existe y es dir (semántica `cp -r`).

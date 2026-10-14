@@ -91,6 +91,16 @@ impl CopyEngine {
                     report.symlinks_created += 1;
                     report.symlinked.push((src, dst));
                 }
+                FileResult::Fallback { src, dst, bytes, is_dir, reason } => {
+                    let _ = self.events_tx.send(CopyEvent::SymlinkFallback { path: src.clone(), target: dst.clone(), reason: reason.clone() }).await;
+                    report.symlinks_fallback.push((src, dst));
+                    if is_dir {
+                        report.dirs_created += 1;
+                    } else {
+                        report.files_copied += 1;
+                        report.bytes_copied += bytes;
+                    }
+                }
                 FileResult::Skipped { path, reason } => {
                     // Fix 3: skip centralizado
                     let _ = self.events_tx.send(CopyEvent::FileSkipped { path: path.clone(), reason }).await;
@@ -130,6 +140,8 @@ enum FileResult {
     Copied { bytes: u64 }, // Fix 8: solo bytes
     DirCreated, // Fix 2: separa dirs
     Symlinked { src: PathBuf, dst: PathBuf },
+    /// P1.6: enlace recreado como contenido por falta de privilegio.
+    Fallback { src: PathBuf, dst: PathBuf, bytes: u64, is_dir: bool, reason: String },
     Skipped { path: PathBuf, reason: SkipReason },
     Failed { path: PathBuf, error: CopyError },
 }
@@ -168,33 +180,7 @@ async fn copy_symlink(
     }
 
     if opts.follow_symlinks {
-        // Seguir el enlace: copiar el contenido resuelto.
-        // El caso directorio recursivo ya viene expandido por el scanner
-        // (WalkDir con follow_links=true); aquí basta con asegurar el dir
-        // destino o delegar a copy_file si es un fichero.
-        match fs::metadata(&task.src).await {
-            Ok(m) if m.is_dir() => {
-                if let Err(e) = fs::create_dir_all(&task.dst).await {
-                    return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
-                }
-                debug!("symlink dir seguido, dir asegurado: {:?} -> {:?}", task.src, task.dst);
-                FileResult::DirCreated
-            }
-            Ok(m) if m.is_file() => {
-                let file_task = CopyTask {
-                    src: task.src.clone(),
-                    dst: task.dst.clone(),
-                    size: m.len(),
-                    kind: TaskKind::File,
-                };
-                copy_file(&file_task, opts, events, cancel).await
-            }
-            Ok(_) => {
-                debug!("symlink especial omitido: {:?}", task.src);
-                FileResult::Skipped { path: task.src.clone(), reason: SkipReason::Excluded }
-            }
-            Err(e) => FileResult::Failed { path: task.src.clone(), error: CopyError::Io { path: task.src.clone(), source: e } },
-        }
+        return copy_symlink_followed(task, opts, events, cancel).await;
     } else {
         // Recrear el enlace sin seguirlo.
         let link_target = match fs::read_link(&task.src).await {
@@ -224,18 +210,73 @@ async fn copy_symlink(
         // P1.1a: creación delegada a platform:: (sin cfg aquí; en Unix
         // ambas ramas usan symlink(), en Windows eligen file/dir).
         let is_dir = fs::metadata(&task.src).await.map(|m| m.is_dir()).unwrap_or(false);
-        // TODO(P1.6): symlink roto apuntando a directorio se recrea como file en Windows (CreateSymbolicLink no valida el target). Ver docs/PLAN.md P1.6.
+        // TODO(P1.6): symlink roto apuntando a directorio se recrea como file
+        // en Windows (CreateSymbolicLink no valida el target) porque aquí no
+        // hay forma fiable de saber el tipo original: metadata() falla y el
+        // enlace no lo almacena. Limitación conocida, ver docs/PLAN.md P1.6.
         let res = if is_dir {
             platform::symlink_dir(&link_target, &task.dst)
         } else {
             platform::symlink_file(&link_target, &task.dst)
         };
         if let Err(e) = res {
+            // P1.6: sin privilegio para crear el enlace (Windows sin
+            // Developer Mode) no se falla: se copia el contenido como si se
+            // siguiera el enlace, y se reporta el fallback.
+            if platform::is_privilege_error(&e) {
+                let reason = e.to_string();
+                debug!("symlink sin privilegio, fallback a contenido: {:?} ({reason})", task.src);
+                return match copy_symlink_followed(task, opts, events, cancel).await {
+                    FileResult::Copied { bytes } => FileResult::Fallback {
+                        src: task.src.clone(), dst: task.dst.clone(), bytes, is_dir: false, reason,
+                    },
+                    FileResult::DirCreated => FileResult::Fallback {
+                        src: task.src.clone(), dst: task.dst.clone(), bytes: 0, is_dir: true, reason,
+                    },
+                    other => other,
+                };
+            }
             return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
         }
 
         debug!("symlink recreado: {:?} -> {:?} (target {:?})", task.src, task.dst, link_target);
         FileResult::Symlinked { src: task.src.clone(), dst: task.dst.clone() }
+    }
+}
+
+/// Copiar el contenido resuelto de un symlink (modo follow).
+///
+/// El caso directorio recursivo ya viene expandido por el scanner
+/// (WalkDir con follow_links=true); aquí basta con asegurar el dir
+/// destino o delegar a copy_file si es un fichero.
+async fn copy_symlink_followed(
+    task: &CopyTask,
+    opts: &CopyOptions,
+    events: &mpsc::Sender<CopyEvent>,
+    cancel: &CancellationToken,
+) -> FileResult {
+    match fs::metadata(&task.src).await {
+        Ok(m) if m.is_dir() => {
+            if let Err(e) = fs::create_dir_all(&task.dst).await {
+                return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
+            }
+            debug!("symlink dir seguido, dir asegurado: {:?} -> {:?}", task.src, task.dst);
+            FileResult::DirCreated
+        }
+        Ok(m) if m.is_file() => {
+            let file_task = CopyTask {
+                src: task.src.clone(),
+                dst: task.dst.clone(),
+                size: m.len(),
+                kind: TaskKind::File,
+            };
+            copy_file(&file_task, opts, events, cancel).await
+        }
+        Ok(_) => {
+            debug!("symlink especial omitido: {:?}", task.src);
+            FileResult::Skipped { path: task.src.clone(), reason: SkipReason::Excluded }
+        }
+        Err(e) => FileResult::Failed { path: task.src.clone(), error: CopyError::Io { path: task.src.clone(), source: e } },
     }
 }
 
@@ -820,5 +861,55 @@ mod tests {
         let report = CopyEngine::new(opts, tx).run(plan).await;
         assert_eq!(report.files_copied, 1);
         assert!(fresh.exists());
+    }
+
+    // P1.6: regresión — recrear symlinks sigue funcionando tras el refactor
+    // (el fallback solo salta con error de privilegio).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_recreate_still_works() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("real.txt");
+        std::fs::write(&target, b"contenido").unwrap();
+        let link = tmp.path().join("link.txt");
+        platform::symlink_file(&target, &link).unwrap();
+        let dst = tmp.path().join("out-link.txt");
+        let opts = CopyOptions::default();
+        let plan = crate::scanner::build_plan(&link, &dst, &opts).unwrap();
+        let (tx, _rx) = mpsc::channel(64);
+        let report = CopyEngine::new(opts, tx).run(plan).await;
+        assert_eq!(report.files_failed, 0);
+        assert_eq!(report.symlinks_created, 1);
+        let meta = std::fs::symlink_metadata(&dst).unwrap();
+        assert!(meta.file_type().is_symlink());
+        assert_eq!(std::fs::read_link(&dst).unwrap(), target);
+    }
+
+    // P1.6: con Developer Mode recrea el enlace; sin él (EACCES) el fallback
+    // copia el contenido. Sin privilegio ni el fixture se puede crear: en ese
+    // caso se pasa en vacío (documentado). Ambos caminos son éxito.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn symlink_recreate_or_fallback_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("real.txt");
+        std::fs::write(&target, b"contenido").unwrap();
+        let link = tmp.path().join("link.txt");
+        let Ok(()) = platform::symlink_file(&target, &link) else {
+            return;
+        };
+        let dst = tmp.path().join("out-link.txt");
+        let opts = CopyOptions::default();
+        let plan = crate::scanner::build_plan(&link, &dst, &opts).unwrap();
+        let (tx, _rx) = mpsc::channel(64);
+        let report = CopyEngine::new(opts, tx).run(plan).await;
+        assert_eq!(report.files_failed, 0);
+        assert_eq!(std::fs::read(&dst).unwrap(), b"contenido");
+        if std::fs::symlink_metadata(&dst).unwrap().file_type().is_symlink() {
+            assert_eq!(report.symlinks_created, 1);
+        } else {
+            assert_eq!(report.files_copied, 1);
+            assert_eq!(report.symlinks_fallback.len(), 1);
+        }
     }
 }

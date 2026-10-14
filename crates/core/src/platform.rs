@@ -109,6 +109,20 @@ pub fn is_hidden(path: &Path) -> io::Result<bool> {
     Ok((attrs & FILE_ATTRIBUTE_HIDDEN.0) != 0)
 }
 
+/// ¿El error indica falta de privilegio para crear symlinks?
+///
+/// Cubre `ErrorKind::PermissionDenied` (portable; en Windows incluye
+/// `ERROR_ACCESS_DENIED`/5) y el código crudo 1314
+/// (`ERROR_PRIVILEGE_NOT_HELD`, que `std` no garantiza mapear a
+/// `PermissionDenied`). Solo se consulta tras fallar `symlink_*`, así que
+/// colisiones con otros errnos son irrelevantes en la práctica.
+/// Constantes verificadas en `windows 0.61.3` (`Win32::Foundation`).
+/// Sin `cfg`, sin `unwrap`/`expect`.
+pub fn is_privilege_error(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::PermissionDenied
+        || matches!(e.raw_os_error(), Some(5) | Some(1314))
+}
+
 /// Canonicaliza y devuelve forma larga (para comparar y evadir `MAX_PATH`).
 ///
 /// Unix: `fs::canonicalize`. Windows: `fs::canonicalize` + prefijo `\\?\`
@@ -255,6 +269,23 @@ pub fn sync_dir(dir: &Path) -> io::Result<()> {
 #[cfg(windows)]
 pub fn sync_dir(_dir: &Path) -> io::Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod privilege_tests {
+    use super::*;
+
+    #[test]
+    fn privilege_error_classifier() {
+        use std::io::{Error, ErrorKind};
+        // PermissionDenied portable (en Windows incluye EACCES/5).
+        assert!(is_privilege_error(&Error::new(ErrorKind::PermissionDenied, "denegado")));
+        // 1314 = ERROR_PRIVILEGE_NOT_HELD (std no garantiza mapearlo a kind).
+        assert!(is_privilege_error(&Error::from_raw_os_error(1314)));
+        // Negativos: NotFound y un código arbitrario (2 = ENOENT en Unix).
+        assert!(!is_privilege_error(&Error::new(ErrorKind::NotFound, "falta")));
+        assert!(!is_privilege_error(&Error::from_raw_os_error(2)));
+    }
 }
 
 #[cfg(all(test, unix))]
