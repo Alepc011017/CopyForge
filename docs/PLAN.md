@@ -37,7 +37,11 @@
 
 ## P2 — Integración CLI/GUI
 
-- **P2.1** ⏳ Pendiente — CLI: `tokio::signal::ctrl_c()` → `cancel_token().cancel()`; `verbose` → `EnvFilter` con `RUST_LOG`. Limpieza de `.tmp` al cancelar. Afecta `apps/cli/src/runner.rs:68-71`.
+- Nota exit codes: `0` éxito / `1` fallos (incl. cancelación). Si más adelante
+  se decide el `130` para SIGINT puro, hay que tocar `main.rs` (y `Report`
+  para distinguir pre-cancelado de éxito vacío); por ahora se queda en `1`.
+
+- **P2.1** ✅ Hecho — CLI: `ctrl_c()` → `cancel_token()` (watcher en `runner.rs`; engine ya cooperaba en spawn/tarea/bucle); limpieza de tmps por `Drop` (P1.4, verificado: 0 huérfanos tras Ctrl-C); `verbose` → `EnvFilter::try_new` con `RUST_LOG`/default `info` (helper puro `log_filter_from`); `exit_code_for` (fallos incl. cancel → 1); render `SymlinkFallback` ya existía (P1.6). 6 tests CLI. Ctrl-C manual verificado (exit 1, reporte “cancelado”). Semántica 0/1 documentada en `exit_code_for`; `130` para SIGINT puro queda como candidato P2.x (requiere indicador “cancelado” en `Report`, cambio en core). Sin commitear todavía.
 - **P2.2** ⏳ Pendiente — GUI: exponer `overwrite/verify/jobs/exclude`; botón Cancelar conectado al token; fix `/0`; etiqueta "bytes" en vez de "archivos"; `Handle` global en vez de `Runtime` por copia; `rfd::AsyncFileDialog`. Afecta `apps/gui/src/app.rs:58,69-74,97,117,303-307`.
 - **P2.3** ⏳ Pendiente — Progreso coherente con skips (H-5): `total_bytes` debe decrementarse con `SkipReason::{Identical,Excluded,NewerExists}`; el progreso llega a 100%. Afecta `engine.rs:34-36`, `apps/cli/src/ui.rs`, `apps/gui/src/app.rs:303-307`.
 - **P2.4** ⏳ Pendiente — Semántica dir→dir idempotente (H-11): flag `--sync` o `--mirror` para copiar `src` → `dst` directamente sin anidar. Discutir semántica exacta (mirror vs merge) antes de implementar. Afecta `scanner.rs` (`build_effective_dest`), `apps/cli` args, `apps/gui` options.

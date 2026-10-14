@@ -127,3 +127,48 @@ impl Args {
         }
     }
 }
+
+/// Construye el filtro de log (P2.1): `-v` fuerza `debug`; si no, respeta
+/// `RUST_LOG` o cae a `info`. Función pura (el env entra como parámetro)
+/// para poder testearla sin tocar el entorno del proceso.
+pub fn log_filter_from(verbose: u8, rust_log: Option<String>) -> String {
+    if verbose > 0 {
+        "debug".to_string()
+    } else {
+        rust_log.unwrap_or_else(|| "info".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing_subscriber::filter::LevelFilter;
+
+    #[test]
+    fn verbose_forces_debug() {
+        assert_eq!(log_filter_from(1, Some("warn".to_string())), "debug");
+        assert_eq!(log_filter_from(2, None), "debug");
+    }
+
+    #[test]
+    fn rust_log_respected_without_verbose() {
+        assert_eq!(log_filter_from(0, Some("warn".to_string())), "warn");
+    }
+
+    #[test]
+    fn default_is_info() {
+        assert_eq!(log_filter_from(0, None), "info");
+    }
+
+    #[test]
+    fn warn_filter_parses_and_excludes_debug() {
+        // RUST_LOG=warn sin -v: el filtro parsea y el nivel debug queda
+        // deshabilitado (max_level_hint == WARN, no DEBUG).
+        let filter = tracing_subscriber::EnvFilter::try_new(log_filter_from(
+            0,
+            Some("warn".to_string()),
+        ));
+        assert!(filter.is_ok());
+        assert_eq!(filter.unwrap().max_level_hint(), Some(LevelFilter::WARN));
+    }
+}
