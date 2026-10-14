@@ -61,6 +61,7 @@
 - H-10 → P0.9 (escape follow-symlink fuera de src: default seguro + opt-in + cap)
 - H-11 → P2.4 (semántica dir→dir no idempotente; flag --sync/--mirror pendiente de diseño)
 - H-12 → P2 (candidato, sin item: lock `.copyforge-lock`; solo si hay evidencia de afectados)
+- H-13 → P1.4-fix1 ✅ (keep() sobre path fantasma en Windows; refutada hipótesis de handles)
 
 ## Limitaciones conocidas (sin acción)
 - TOCTOU validación→walk: el FS puede cambiar entre `validate_*` y el WalkDir/copia (p. ej. symlink sustituido tras validar). Sin locks no es cerrable del todo; la validación es defensa en profundidad, no garantía. No se actúa.
@@ -95,3 +96,9 @@
   - Causa: el gate de 1h es heurístico. Copias largas pueden tener temporales legítimos con más de 1h de antigüedad.
   - Fix candidato: archivo `.copyforge-lock` en el directorio destino con PID + timestamp, y saltar el cleanup si hay un lock activo.
   - Umbral de activación: solo si hay evidencia de usuarios afectados.
+- **H-13 (P1)** — `TempPath::keep()` tras `atomic_replace` falla en Windows.
+  - Causa: en Unix `keep()` es no-op, pero en Windows ejecuta `SetFileAttributesW` sobre el path viejo del temporal, que ya no existe tras el rename → `ERROR_FILE_NOT_FOUND`. La hipótesis inicial (handles abiertos / `SHARING_VIOLATION`) se refutó: `into_temp_path()` cierra el handle interno y `drop(dst)` cierra el duplicado antes del rename.
+  - Efecto: `FileResult::Failed` aunque la copia quedó correcta en disco (`files_copied=0` en los 3 tests de motor en CI Windows).
+  - Fix aplicado (P1.4-fix1): eliminar `keep()`; tras rename exitoso no hay nada que conservar y el `Drop` del `TempPath` es no-op sobre el path movido.
+  - Seguimiento: el flag `TEMPORARY` viaja con el rename al `dst`; si `Full` en Windows quiere quitarlo, hacerlo con `SetFileAttributesW` sobre el `dst`, no vía `keep()`.
+  - Estado: ✅ Hecho.

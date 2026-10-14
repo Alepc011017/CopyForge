@@ -329,6 +329,27 @@ mod tests {
         sync_dir(tmp.path()).unwrap();
         assert_eq!(std::fs::read(&f).unwrap(), b"sync");
     }
+
+    #[test]
+    fn atomic_replace_does_not_require_keep() {
+        // P1.4-fix1: el rename funciona sin keep() previo; el Drop posterior
+        // del TempPath sobre el path ya movido es no-op (en Windows, keep()
+        // fallaba con ERROR_FILE_NOT_FOUND sobre ese path fantasma).
+        let tmp = tempfile::tempdir().unwrap();
+        let named = tempfile::Builder::new()
+            .prefix(".copyforge-tmp-")
+            .tempfile_in(tmp.path())
+            .unwrap();
+        let ghost: PathBuf = named.path().to_path_buf();
+        std::fs::write(&ghost, b"contenido").unwrap();
+        let dst = tmp.path().join("dst.txt");
+        let temp_path = named.into_temp_path();
+        atomic_replace(&ghost, &dst).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), b"contenido");
+        drop(temp_path);
+        assert_eq!(std::fs::read(&dst).unwrap(), b"contenido");
+        assert!(!ghost.exists());
+    }
 }
 
 #[cfg(all(test, windows))]
@@ -353,5 +374,23 @@ mod tests_windows {
         // metadatos); basta con que devuelva Ok.
         let tmp = tempfile::tempdir().unwrap();
         assert!(sync_dir(tmp.path()).is_ok());
+    }
+
+    #[test]
+    fn atomic_replace_does_not_require_keep() {
+        let tmp = tempfile::tempdir().unwrap();
+        let named = tempfile::Builder::new()
+            .prefix(".copyforge-tmp-")
+            .tempfile_in(tmp.path())
+            .unwrap();
+        let ghost: PathBuf = named.path().to_path_buf();
+        std::fs::write(&ghost, b"contenido").unwrap();
+        let dst = tmp.path().join("dst.txt");
+        let temp_path = named.into_temp_path();
+        atomic_replace(&ghost, &dst).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), b"contenido");
+        drop(temp_path);
+        assert_eq!(std::fs::read(&dst).unwrap(), b"contenido");
+        assert!(!ghost.exists());
     }
 }

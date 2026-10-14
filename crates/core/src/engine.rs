@@ -420,13 +420,13 @@ async fn copy_file(
         // `temp_path` se dropea aquí y limpia el temporal.
         return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
     }
-    match temp_path.keep() {
-        Ok(_) => {}
-        Err(e) => {
-            // keep() falló: el Drop del TempPath elimina dst → Failed exacto.
-            return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: std::io::Error::from(e) } };
-        }
-    }
+    // IMPORTANTE: NO llamar a temp_path.keep() tras atomic_replace.
+    // En Unix keep() es no-op; en Windows ejecuta SetFileAttributesW sobre el
+    // path viejo del temporal, que ya no existe tras el rename → ERROR_FILE_NOT_FOUND
+    // → se contaría FileResult::Failed aunque la copia fue correcta.
+    // El Drop del TempPath es un no-op inofensivo sobre un path ya movido.
+    // Ver CI run 2026-10-14T05:37 para evidencia.
+    drop(temp_path);
 
     // --- metadatos post-rename (P1.3): mtime/atime + readonly Windows ---
     // Best-effort: si falla, la copia ya es correcta; se registra en debug
