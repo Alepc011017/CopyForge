@@ -27,7 +27,7 @@
 - **P1.2** ✅ Hecho (vía P1.1b) — `atomic_replace` Windows con `ReplaceFileW` + fallback a `MoveFileExW` si `ERROR_FILE_NOT_FOUND`; Unix mantiene `rename`; el `remove+rename` de `engine.rs` desaparece. Rama Windows verificada contra fuentes + CI (sin toolchain local).
 - **P1.1c** ✅ Hecho — `sync_dir` en `platform.rs` (Unix `open+sync_all`; Windows `CreateFileW` con `FILE_FLAG_BACKUP_SEMANTICS` + `FlushFileBuffers` + `CloseHandle` siempre; +feature `Win32_Security` exigido por `CreateFileW`, detectado por E0432 en CI). Engine usa `platform::sync_dir`; eliminado `sync_parent_dir` + `warn_once`/`Arc<Once>` (ya sin usos). Doc de `Full` actualizado (funcional en ambas). Tests unix + windows. Sin commitear todavía.
 - **P1.1c-fix3** ✅ Hecho — En Windows, `sync_dir` pasa a no-op documentado: `FlushFileBuffers` sobre handle de directorio falla con `E_ACCESSDENIED` en CI y NTFS ya journaliza los metadatos (no necesita fsync del directorio). Eliminados `CreateFileW`/`FlushFileBuffers`/`CloseHandle` y la feature `Win32_Security` (ya sin usos; verificado por grep). `Full` en Windows ≡ `File`. Test Windows cambiado a `sync_dir_returns_ok`.
-- **P1.3** ⏳ Pendiente — `preserve_metadata` completo: `mtime` + `mode` en Unix; `readonly` + `mtime` en Windows. Incluye H-1 (mtime roto en `IfDifferent`/`IfNewer`). Afecta `engine.rs:380-384`.
+- **P1.3** ✅ Hecho — `preserve_metadata` (renombrado desde `preserve_permissions`): mode Unix (existente), mtime+atime vía `filetime 0.2` post-rename (best-effort + debug), readonly en Windows si el origen lo era. Skips `IfNewer/IfDifferent` ahora emiten `Identical` (`Never` sigue `AlreadyExists`). 2 tests (mtime ±1s; segunda pasada `IfDifferent` no copia). Sin commitear todavía.
 - **P1.4** ⏳ Pendiente — Temporales robustos (H-3): `tempfile::NamedTempFile` en el mismo directorio + limpieza de huérfanos `*.copyforge.tmp` al inicio. Excluir el patrón en `scanner.rs:118-122`.
 - **P1.5** ⏳ Pendiente — Globs cross-platform: `GlobBuilder::literal_separator(true)` + normalizar `/` antes de matchear. Afecta `scanner.rs:103-116`.
 - **P1.6** ⏳ Pendiente — Fallback de symlink en Windows (H-6): si `symlink_file`/`symlink_dir` devuelve `EACCES`, copiar contenido + emitir `CopyEvent::SymlinkFallback` con warning. Afecta `engine.rs:212-223`.
@@ -40,14 +40,16 @@
 - **P2.1** ⏳ Pendiente — CLI: `tokio::signal::ctrl_c()` → `cancel_token().cancel()`; `verbose` → `EnvFilter` con `RUST_LOG`. Limpieza de `.tmp` al cancelar. Afecta `apps/cli/src/runner.rs:68-71`.
 - **P2.2** ⏳ Pendiente — GUI: exponer `overwrite/verify/jobs/exclude`; botón Cancelar conectado al token; fix `/0`; etiqueta "bytes" en vez de "archivos"; `Handle` global en vez de `Runtime` por copia; `rfd::AsyncFileDialog`. Afecta `apps/gui/src/app.rs:58,69-74,97,117,303-307`.
 - **P2.3** ⏳ Pendiente — Progreso coherente con skips (H-5): `total_bytes` debe decrementarse con `SkipReason::{Identical,Excluded,NewerExists}`; el progreso llega a 100%. Afecta `engine.rs:34-36`, `apps/cli/src/ui.rs`, `apps/gui/src/app.rs:303-307`.
+- **P2.4** ⏳ Pendiente — Semántica dir→dir idempotente (H-11): flag `--sync` o `--mirror` para copiar `src` → `dst` directamente sin anidar. Discutir semántica exacta (mirror vs merge) antes de implementar. Afecta `scanner.rs` (`build_effective_dest`), `apps/cli` args, `apps/gui` options.
 
 ## P3 — Tests y robustez
 
 - **P3.1** ⏳ Pendiente — `crates/core/tests/`: `plan.rs` (4 casos), `overwrite.rs` (Never/IfNewer/IfDifferent/Always + SkipReason::Identical), `verify.rs` (Size/Hash), `symlink.rs` (cfg(unix), follow true/false), `cancel.rs` (cancela a mitad + limpieza .tmp), `src_eq_dst.rs` (P0.5).
 - **P3.2** ⏳ Pendiente — E2E en `apps/cli/tests/`: copia real de árbol pequeño con `assert_cmd`, verificación de `--overwrite` y `--verify`, fixture con `tempfile::TempDir`, cleanup automático.
+- **P3.3** ⏳ Pendiente — Tests runtime Windows-específicos para `preserve_metadata` (readonly): copiar fichero readonly y verificar flag en destino; corre en CI windows-latest (en Linux esa rama es `cfg` y no se ejecuta).
 
 ## Hallazgos resueltos (integrados arriba)
-- H-1 → P1.3
+- H-1 → P1.3 ✅ (mtime preservado; `Identical` en skips)
 - H-2 → P0.6a (DurabilityPolicy; Full en Windows → P1.1) + P0.6b (test integración)
 - H-3 → P1.4
 - H-4 → P0.5
@@ -57,6 +59,7 @@
 - H-8 → P1.7 (validación case-insensitive en Windows/macOS)
 - H-9 → P1.8 (falso positivo symlink-src→target-dir, con workaround)
 - H-10 → P0.9 (escape follow-symlink fuera de src: default seguro + opt-in + cap)
+- H-11 → P2.4 (semántica dir→dir no idempotente; flag --sync/--mirror pendiente de diseño)
 
 ## Limitaciones conocidas (sin acción)
 - TOCTOU validación→walk: el FS puede cambiar entre `validate_*` y el WalkDir/copia (p. ej. symlink sustituido tras validar). Sin locks no es cerrable del todo; la validación es defensa en profundidad, no garantía. No se actúa.
@@ -74,10 +77,16 @@
 
 ## 2. Hallazgos adicionales
 
-- **H-1 (P1)** — `preserve_permissions` no preserva `mtime`. Rompe `IfDifferent/IfNewer` en la segunda pasada (siempre recopía). Afectado: `crates/core/src/engine.rs:380-384`. Estado: ⏳ Pendiente.
+- **H-1 (P1)** — `preserve_permissions` no preservaba `mtime` (recopiaba siempre en la segunda pasada). Resuelto en P1.3 con `preserve_metadata` + skips `Identical`. Estado: ✅ Hecho.
 - **H-2 (P1)** — Sin `fsync`: `flush()` antes del rename no garantiza durabilidad. Resuelto vía `DurabilityPolicy` (P0.6a) + `sync_dir` en `platform.rs`: Unix hace `fsync` del padre; Windows es no-op documentado (NTFS journaliza metadatos, P1.1c-fix3). Estado: ✅ Hecho.
 - **H-3 (P0)** — Temporales `*.copyforge.tmp` huérfanos: el scanner no los excluye y no hay limpieza; un re-run los copiaría como ficheros. Afectado: `crates/core/src/engine.rs:407-411`, `crates/core/src/scanner.rs:118-122`. Estado: ⏳ Pendiente.
 - **H-4 (P0)** — Sin validación `src==dst` ni `dst dentro de src`: riesgo de recursión explosiva/autosobrescritura. Afectado: `crates/core/src/scanner.rs:11-14`, `apps/cli/src/runner.rs`, `apps/gui/src/app.rs`. Estado: ⏳ Pendiente.
 - **H-5 (P2)** — El progreso nunca llega a 100% con skips: `total_bytes` se calcula en el plan (`crates/core/src/engine.rs:34-36`) pero `Never/IfDifferent` luego saltan ficheros sin restar. Afectado además: `apps/cli/src/ui.rs`, `apps/gui/src/app.rs:303-307`. Estado: ⏳ Pendiente.
 - **H-6 (P1)** — Symlink en Windows exige privilegio/Developer Mode. Falta fallback a “copiar contenido + warning” si da `EACCES`. Afectado: `crates/core/src/engine.rs:212-223`. Estado: ⏳ Pendiente.
 - **H-7 (P0)** — `report.errors` sin cota: con millones de fallos puede agotar memoria. Capar (p.ej. 1000) + contador `errors_truncated`. Afectado: `crates/core/src/engine.rs:89-93`, `crates/core/src/events.rs`. Estado: ⏳ Pendiente.
+- **H-11 (P2)** — Semántica dir→dir existente no es idempotente:
+  - Causa: `build_effective_dest` anida `dst/src` cuando `dst` existe y es dir (semántica `cp -r`).
+  - Efecto: `IfDifferent`/`IfNewer` no puede usarse para sincronización idempotente.
+  - Candidato a fix: flag `--sync` o `--mirror` que cambie la semántica para copiar `src` → `dst` directamente sin anidar. Discutir semántica exacta (mirror vs merge) antes de implementar.
+  - Afectado: `scanner.rs` (`build_effective_dest`), `apps/cli` args, `apps/gui` options.
+  - Estado: ⏳ Pendiente.

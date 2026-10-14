@@ -12,6 +12,7 @@ blake3      = { workspace = true }
 thiserror   = { workspace = true }
 tracing     = { workspace = true }
 globset     = { workspace = true }
+filetime    = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

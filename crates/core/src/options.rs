@@ -2,7 +2,13 @@
 pub struct CopyOptions {
     pub overwrite: OverwritePolicy,
     pub verify: VerifyPolicy,
-    pub preserve_permissions: bool,
+    /// P1.3 (antes `preserve_permissions`): preserva metadatos, no solo permisos.
+    ///
+    /// Se preserva: mode Unix (bits rwx), mtime + atime (ambas plataformas
+    /// vía `filetime`), flag readonly en Windows (si el origen lo era).
+    /// NO se preserva en v1 (limitación conocida): ownership (uid/gid),
+    /// ACLs, xattrs ni tiempos de creación (btime).
+    pub preserve_metadata: bool,
     pub follow_symlinks: bool,
     pub buffer_size: usize,        // bytes por lectura (default 256 KiB)
     pub parallel_files: usize,     // archivos en paralelo
@@ -29,7 +35,7 @@ impl Default for CopyOptions {
         Self {
             overwrite: OverwritePolicy::Always,
             verify: VerifyPolicy::Size,
-            preserve_permissions: true,
+            preserve_metadata: true,
             follow_symlinks: false,
             buffer_size: 256 * 1024,
             parallel_files: 4,

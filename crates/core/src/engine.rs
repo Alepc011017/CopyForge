@@ -284,8 +284,13 @@ async fn copy_file(
         };
 
         if skip {
-            // Fix 3: lo avisa run()
-            return FileResult::Skipped { path: task.dst.clone(), reason: SkipReason::AlreadyExists };
+            // Fix 3: lo avisa run(). Never = ya existía; el resto de
+            // políticas que coinciden equivalen a idéntico (P1.3).
+            let reason = match opts.overwrite {
+                OverwritePolicy::Never => SkipReason::AlreadyExists,
+                _ => SkipReason::Identical,
+            };
+            return FileResult::Skipped { path: task.dst.clone(), reason };
         }
     }
 
@@ -391,8 +396,8 @@ async fn copy_file(
         }
     }
 
-    // --- permisos ---
-    if opts.preserve_permissions {
+    // --- permisos (mode Unix; el resto de metadatos va tras el rename) ---
+    if opts.preserve_metadata {
         if let Ok(meta) = fs::metadata(&task.src).await {
             let _ = fs::set_permissions(&tmp_path, meta.permissions()).await;
         }
@@ -402,6 +407,30 @@ async fn copy_file(
     if let Err(e) = platform::atomic_replace(&tmp_path, &task.dst) {
         let _ = fs::remove_file(&tmp_path).await;
         return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
+    }
+
+    // --- metadatos post-rename (P1.3): mtime/atime + readonly Windows ---
+    // Best-effort: si falla, la copia ya es correcta; se registra en debug
+    // y se sigue (fallar aquí provocaría recopiados, no corrupción).
+    if opts.preserve_metadata {
+        if let Ok(src_meta) = fs::metadata(&task.src).await {
+            if let Ok(mtime) = src_meta.modified() {
+                let atime = src_meta.accessed().unwrap_or(mtime);
+                if let Err(e) = filetime::set_file_times(
+                    &task.dst,
+                    filetime::FileTime::from_system_time(atime),
+                    filetime::FileTime::from_system_time(mtime),
+                ) {
+                    debug!("no se pudo preservar mtime de {:?}: {e}", task.dst);
+                }
+            }
+            #[cfg(windows)]
+            {
+                if src_meta.permissions().readonly() {
+                    let _ = platform::set_readonly(&task.dst, true);
+                }
+            }
+        }
     }
 
     // --- durabilidad post-rename (P1.1c): solo Full sincroniza el dir padre ---
@@ -589,5 +618,62 @@ mod tests {
         assert_eq!(report.files_failed, 5);
         assert_eq!(report.errors.len(), 5);
         assert_eq!(report.errors_truncated, 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn preserve_metadata_keeps_mtime() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("a.txt");
+        std::fs::write(&src, b"data").unwrap();
+        let mtime = UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+        filetime::set_file_mtime(&src, filetime::FileTime::from_system_time(mtime)).unwrap();
+        let dst = tmp.path().join("b.txt");
+        let opts = CopyOptions::default();
+        let plan = crate::scanner::build_plan(&src, &dst, &opts).unwrap();
+        let (tx, _rx) = mpsc::channel(64);
+        let report = CopyEngine::new(opts, tx).run(plan).await;
+        assert_eq!(report.files_copied, 1);
+        let got = std::fs::metadata(&dst).unwrap().modified().unwrap();
+        let diff = got
+            .duration_since(mtime)
+            .unwrap_or_else(|e| e.duration());
+        assert!(diff <= Duration::from_secs(1), "mtime diff too big: {diff:?}");
+    }
+
+    #[tokio::test]
+    async fn if_different_second_pass_skips_all() {
+        // OJO: con dir+dst-existente el efectivo anida (dst/src) por diseño
+        // P0.2, así que la idempotencia estable se prueba con un fichero:
+        // src=file, dst=file es estable entre pasadas.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("a.txt");
+        std::fs::write(&src, b"aaa").unwrap();
+        let dst = tmp.path().join("b.txt");
+        let opts = CopyOptions {
+            overwrite: OverwritePolicy::IfDifferent,
+            ..CopyOptions::default()
+        };
+        let (tx, _rx) = mpsc::channel(1024);
+        let plan = crate::scanner::build_plan(&src, &dst, &opts).unwrap();
+        let first = CopyEngine::new(opts.clone(), tx).run(plan).await;
+        assert_eq!(first.files_copied, 1);
+        let (tx2, mut rx2) = mpsc::channel(1024);
+        let plan2 = crate::scanner::build_plan(&src, &dst, &opts).unwrap();
+        let second = CopyEngine::new(opts, tx2).run(plan2).await;
+        assert_eq!(second.files_copied, 0);
+        assert_eq!(second.files_skipped, 1);
+        let mut identical = 0;
+        while let Ok(ev) = rx2.try_recv() {
+            if let CopyEvent::FileSkipped {
+                reason: SkipReason::Identical,
+                ..
+            } = ev
+            {
+                identical += 1;
+            }
+        }
+        assert_eq!(identical, 1);
     }
 }

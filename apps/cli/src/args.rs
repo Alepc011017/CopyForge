@@ -40,7 +40,7 @@ pub struct Args {
     #[arg(short = 'x', long = "exclude")]
     pub exclude: Vec<String>,
 
-    /// No preservar permisos
+    /// No preservar metadatos (permisos, mtime)
     #[arg(long)]
     pub no_preserve: bool,
 
@@ -114,7 +114,7 @@ impl Args {
         CopyOptions {
             overwrite: self.overwrite.into(),
             verify: self.verify.into(),
-            preserve_permissions: !self.no_preserve,
+            preserve_metadata: !self.no_preserve,
             follow_symlinks: self.follow_symlinks,
             buffer_size: self.buffer_kib * 1024,
             parallel_files: self.jobs.max(1),
