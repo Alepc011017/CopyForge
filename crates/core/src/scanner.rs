@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -341,10 +341,15 @@ pub fn build_plan(src: &Path, dst: &Path, options: &CopyOptions) -> Result<CopyP
 fn build_globset(patterns: &[String]) -> Result<GlobSet, CopyError> {
     let mut b = GlobSetBuilder::new();
     for p in patterns {
-        let g = Glob::new(p).map_err(|e| CopyError::Io {
-            path: PathBuf::from(p),
-            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()),
-        })?;
+        // P1.5: estilo .gitignore — `*` NO cruza `/`, igual en ambos SO.
+        // (La opción vive en GlobBuilder, no en GlobSetBuilder.)
+        let g = GlobBuilder::new(p)
+            .literal_separator(true)
+            .build()
+            .map_err(|e| CopyError::Io {
+                path: PathBuf::from(p),
+                source: std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()),
+            })?;
         b.add(g);
     }
     b.build().map_err(|e| CopyError::Io {
@@ -353,10 +358,30 @@ fn build_globset(patterns: &[String]) -> Result<GlobSet, CopyError> {
     })
 }
 
+/// Normaliza una ruta relativa a separador `/` para el matcheo de globs.
+///
+/// Usa `Path::components()` (sin manipulación de strings): cada componente
+/// se une con `/`. En Windows los componentes ya vienen sin `\`, así que el
+/// resultado es idéntico al de Unix. Sin `unwrap`/`expect`.
+fn normalize_for_glob(rel: &Path) -> String {
+    rel.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// ¿La ruta está excluida por los globs?
+///
+/// Matcheo agnóstico al SO: la ruta relativa se normaliza a `/` (ver
+/// [`normalize_for_glob`]) y el `GlobSet` usa `literal_separator(true)`.
+/// Los patrones SIEMPRE deben usar `/`, nunca `\`.
+///
+/// Antes, `target/**` no matcheaba `target/file.txt` igual en ambos SO
+/// (en Windows las rutas llevan `\`); ahora sí, en Unix y Windows.
 fn is_excluded(path: &Path, root: &Path, set: &GlobSet) -> bool {
     if set.is_empty() { return false; }
     let rel = path.strip_prefix(root).unwrap_or(path);
-    set.is_match(rel)
+    set.is_match(normalize_for_glob(rel))
 }
 
 #[cfg(test)]
@@ -566,5 +591,42 @@ mod tests {
             }
             _ => panic!("expected EscapeCapExceeded"),
         }
+    }
+
+    #[test]
+    fn glob_target_star_star_excludes_only_target() {
+        let set = build_globset(&["target/**".to_string()]).unwrap();
+        let root = Path::new("/root");
+        assert!(is_excluded(&root.join("target/file.txt"), root, &set));
+        assert!(is_excluded(&root.join("target/sub/deep.txt"), root, &set));
+        assert!(!is_excluded(&root.join("src/file.txt"), root, &set));
+        assert!(!is_excluded(&root.join("target2/file.txt"), root, &set));
+    }
+
+    #[test]
+    fn normalize_for_glob_uses_forward_slashes() {
+        // Sin '\\': en Unix es carácter literal del nombre, no separador.
+        let p = PathBuf::from("dir/subdir/file.txt");
+        assert_eq!(normalize_for_glob(&p), "dir/subdir/file.txt");
+    }
+
+    // Crear symlinks en Windows exige privilegios: se compila en ambos,
+    // solo se ejecuta en Unix.
+    #[cfg_attr(windows, ignore)]
+    #[test]
+    fn symlink_to_dir_classified_as_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = tmp.path().join("link");
+        platform::symlink_dir(&real, &link).unwrap();
+        let dst = tmp.path().join("dst");
+        let opts = CopyOptions {
+            follow_symlinks: false,
+            ..CopyOptions::default()
+        };
+        let plan = build_plan(&link, &dst, &opts).unwrap();
+        assert_eq!(plan.tasks.len(), 1);
+        assert_eq!(plan.tasks[0].kind, TaskKind::Symlink);
     }
 }
