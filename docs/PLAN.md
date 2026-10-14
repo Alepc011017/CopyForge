@@ -28,7 +28,7 @@
 - **P1.1c** ✅ Hecho — `sync_dir` en `platform.rs` (Unix `open+sync_all`; Windows `CreateFileW` con `FILE_FLAG_BACKUP_SEMANTICS` + `FlushFileBuffers` + `CloseHandle` siempre; +feature `Win32_Security` exigido por `CreateFileW`, detectado por E0432 en CI). Engine usa `platform::sync_dir`; eliminado `sync_parent_dir` + `warn_once`/`Arc<Once>` (ya sin usos). Doc de `Full` actualizado (funcional en ambas). Tests unix + windows. Sin commitear todavía.
 - **P1.1c-fix3** ✅ Hecho — En Windows, `sync_dir` pasa a no-op documentado: `FlushFileBuffers` sobre handle de directorio falla con `E_ACCESSDENIED` en CI y NTFS ya journaliza los metadatos (no necesita fsync del directorio). Eliminados `CreateFileW`/`FlushFileBuffers`/`CloseHandle` y la feature `Win32_Security` (ya sin usos; verificado por grep). `Full` en Windows ≡ `File`. Test Windows cambiado a `sync_dir_returns_ok`.
 - **P1.3** ✅ Hecho — `preserve_metadata` (renombrado desde `preserve_permissions`): mode Unix (existente), mtime+atime vía `filetime 0.2` post-rename (best-effort + debug), readonly en Windows si el origen lo era. Skips `IfNewer/IfDifferent` ahora emiten `Identical` (`Never` sigue `AlreadyExists`). 2 tests (mtime ±1s; segunda pasada `IfDifferent` no copia). Sin commitear todavía.
-- **P1.4** ⏳ Pendiente — Temporales robustos (H-3): `tempfile::NamedTempFile` en el mismo directorio + limpieza de huérfanos `*.copyforge.tmp` al inicio. Excluir el patrón en `scanner.rs:118-122`.
+- **P1.4** ✅ Hecho — Temporales robustos (H-3): `NamedTempFile` con prefijo `.copyforge-tmp-` en el mismo dir que `dst` (mismo FS → rename atómico); `into_temp_path` + `keep()` tras éxito (sin `persist()`, conserva `ReplaceFileW`); auto-borrado por `Drop` en fallos; limpieza al inicio de `run()` (padres de tareas, 1 nivel, solo >1h para no tocar copias concurrentes). Sin commitear todavía.
 - **P1.5** ⏳ Pendiente — Globs cross-platform: `GlobBuilder::literal_separator(true)` + normalizar `/` antes de matchear. Afecta `scanner.rs:103-116`.
 - **P1.6** ⏳ Pendiente — Fallback de symlink en Windows (H-6): si `symlink_file`/`symlink_dir` devuelve `EACCES`, copiar contenido + emitir `CopyEvent::SymlinkFallback` con warning. Afecta `engine.rs:212-223`.
   - Sub-caso: symlink roto apuntando a directorio en Windows → se recrea como file. Sin heurística fiable; documentar como limitación conocida y valorar fallback a copia del target o warning.
@@ -51,7 +51,7 @@
 ## Hallazgos resueltos (integrados arriba)
 - H-1 → P1.3 ✅ (mtime preservado; `Identical` en skips)
 - H-2 → P0.6a (DurabilityPolicy; Full en Windows → P1.1) + P0.6b (test integración)
-- H-3 → P1.4
+- H-3 → P1.4 ✅ (temporales con prefijo + limpieza con gate de antigüedad)
 - H-4 → P0.5
 - H-5 → P2.3
 - H-6 → P1.6
@@ -60,6 +60,7 @@
 - H-9 → P1.8 (falso positivo symlink-src→target-dir, con workaround)
 - H-10 → P0.9 (escape follow-symlink fuera de src: default seguro + opt-in + cap)
 - H-11 → P2.4 (semántica dir→dir no idempotente; flag --sync/--mirror pendiente de diseño)
+- H-12 → P2 (candidato, sin item: lock `.copyforge-lock`; solo si hay evidencia de afectados)
 
 ## Limitaciones conocidas (sin acción)
 - TOCTOU validación→walk: el FS puede cambiar entre `validate_*` y el WalkDir/copia (p. ej. symlink sustituido tras validar). Sin locks no es cerrable del todo; la validación es defensa en profundidad, no garantía. No se actúa.
@@ -79,7 +80,7 @@
 
 - **H-1 (P1)** — `preserve_permissions` no preservaba `mtime` (recopiaba siempre en la segunda pasada). Resuelto en P1.3 con `preserve_metadata` + skips `Identical`. Estado: ✅ Hecho.
 - **H-2 (P1)** — Sin `fsync`: `flush()` antes del rename no garantiza durabilidad. Resuelto vía `DurabilityPolicy` (P0.6a) + `sync_dir` en `platform.rs`: Unix hace `fsync` del padre; Windows es no-op documentado (NTFS journaliza metadatos, P1.1c-fix3). Estado: ✅ Hecho.
-- **H-3 (P0)** — Temporales `*.copyforge.tmp` huérfanos: el scanner no los excluye y no hay limpieza; un re-run los copiaría como ficheros. Afectado: `crates/core/src/engine.rs:407-411`, `crates/core/src/scanner.rs:118-122`. Estado: ⏳ Pendiente.
+- **H-3 (P0)** — Temporales huérfanos (`*.copyforge.tmp`): resuelto en P1.4 con `NamedTempFile` (prefijo `.copyforge-tmp-`, auto-borrado) + limpieza al inicio de `run()` con gate >1h. Nota: el walk es anterior a la limpieza; un huérfano planificado falla de forma benigna (ver doc en `build_plan`). Estado: ✅ Hecho.
 - **H-4 (P0)** — Sin validación `src==dst` ni `dst dentro de src`: riesgo de recursión explosiva/autosobrescritura. Afectado: `crates/core/src/scanner.rs:11-14`, `apps/cli/src/runner.rs`, `apps/gui/src/app.rs`. Estado: ⏳ Pendiente.
 - **H-5 (P2)** — El progreso nunca llega a 100% con skips: `total_bytes` se calcula en el plan (`crates/core/src/engine.rs:34-36`) pero `Never/IfDifferent` luego saltan ficheros sin restar. Afectado además: `apps/cli/src/ui.rs`, `apps/gui/src/app.rs:303-307`. Estado: ⏳ Pendiente.
 - **H-6 (P1)** — Symlink en Windows exige privilegio/Developer Mode. Falta fallback a “copiar contenido + warning” si da `EACCES`. Afectado: `crates/core/src/engine.rs:212-223`. Estado: ⏳ Pendiente.
@@ -90,3 +91,7 @@
   - Candidato a fix: flag `--sync` o `--mirror` que cambie la semántica para copiar `src` → `dst` directamente sin anidar. Discutir semántica exacta (mirror vs merge) antes de implementar.
   - Afectado: `scanner.rs` (`build_effective_dest`), `apps/cli` args, `apps/gui` options.
   - Estado: ⏳ Pendiente.
+- **H-12 (P2, candidato)** — Colisión de `cleanup_orphan_tmps` en copias concurrentes >1h.
+  - Causa: el gate de 1h es heurístico. Copias largas pueden tener temporales legítimos con más de 1h de antigüedad.
+  - Fix candidato: archivo `.copyforge-lock` en el directorio destino con PID + timestamp, y saltar el cleanup si hay un lock activo.
+  - Umbral de activación: solo si hay evidencia de usuarios afectados.

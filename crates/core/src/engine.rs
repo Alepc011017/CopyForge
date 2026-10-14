@@ -37,6 +37,10 @@ impl CopyEngine {
         let total_tasks = plan.tasks.len();
         let total_bytes = plan.total_bytes;
 
+        // P1.4: limpieza best-effort de temporales huérfanos de ejecuciones
+        // anteriores/interrumpidas, antes de copiar.
+        cleanup_orphan_tmps(&plan.tasks).await;
+
         let _ = self.events_tx.send(CopyEvent::Planned { total_files, total_bytes }).await;
 
         let sem = Arc::new(Semaphore::new(self.options.parallel_files.max(1)));
@@ -312,11 +316,18 @@ async fn copy_file(
         Err(e) => return FileResult::Failed { path: task.src.clone(), error: CopyError::Io { path: task.src.clone(), source: e } },
     };
 
-    // --- escribir a archivo temporal (atomicidad + resume-friendly) ---
-    let tmp_path = tmp_path_for(&task.dst);
-    let mut dst = match fs::File::create(&tmp_path).await {
-        Ok(f) => f,
+    // --- temporal único en el mismo FS que dst (P1.4) ---
+    // NamedTempFile reserva un nombre único (O_EXCL) con prefijo reconocible
+    // y borra el archivo al hacer Drop: ningún retorno de error deja huérfano.
+    let named = match create_temp_in(&task.dst) {
+        Ok(n) => n,
         // Fix 7: reporta dst, no tmp
+        Err(e) => return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } },
+    };
+    // Handle async sobre el mismo inode (reopen duplica el fd, cursor en 0).
+    // `named` se mantiene vivo para retener el path y el auto-borrado.
+    let mut dst = match named.reopen() {
+        Ok(f) => tokio::fs::File::from_std(f),
         Err(e) => return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } },
     };
 
@@ -327,7 +338,7 @@ async fn copy_file(
     loop {
         if cancel.is_cancelled() {
             drop(dst);
-            let _ = fs::remove_file(&tmp_path).await;
+            // `named` se dropea aquí y limpia el temporal.
             return FileResult::Failed { path: task.src.clone(), error: CopyError::Cancelled };
         }
 
@@ -336,14 +347,12 @@ async fn copy_file(
             Ok(n) => n,
             Err(e) => {
                 drop(dst);
-                let _ = fs::remove_file(&tmp_path).await;
                 return FileResult::Failed { path: task.src.clone(), error: CopyError::Io { path: task.src.clone(), source: e } };
             }
         };
 
         if let Err(e) = dst.write_all(&buf[..n]).await {
             drop(dst);
-            let _ = fs::remove_file(&tmp_path).await;
             return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
         }
 
@@ -362,17 +371,18 @@ async fn copy_file(
 
     if let Err(e) = dst.flush().await {
         drop(dst);
-        let _ = fs::remove_file(&tmp_path).await;
         return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
     }
 
     // --- durabilidad pre-rename (P0.6a): fsync del temporal según política ---
     if let Err(e) = apply_durability(opts.durability, &dst, &task.dst).await {
         drop(dst);
-        let _ = fs::remove_file(&tmp_path).await;
         return FileResult::Failed { path: task.dst.clone(), error: e };
     }
     drop(dst);
+
+    // A partir de aquí se opera por path sobre el temporal retenido por `named`.
+    let tmp_path = named.path().to_path_buf();
 
     // --- verificación ---
     match opts.verify {
@@ -380,7 +390,6 @@ async fn copy_file(
         VerifyPolicy::Size => {
             if let Ok(m) = fs::metadata(&tmp_path).await {
                 if m.len() != task.size {
-                    let _ = fs::remove_file(&tmp_path).await;
                     return FileResult::Failed {
                         path: task.dst.clone(),
                         error: CopyError::VerifyFailed(task.dst.clone()),
@@ -390,7 +399,6 @@ async fn copy_file(
         }
         VerifyPolicy::Hash => {
             if let Err(e) = verify_hash(&task.src, &tmp_path, &task.dst).await {
-                let _ = fs::remove_file(&tmp_path).await;
                 return FileResult::Failed { path: task.dst.clone(), error: e };
             }
         }
@@ -404,9 +412,20 @@ async fn copy_file(
     }
 
     // --- rename atómico (P1.1b: vía platform::atomic_replace) ---
+    // Se convierte a TempPath para desarmar el auto-borrado: tras el rename
+    // el path es el destino final y el Drop NO debe eliminarlo (opción B:
+    // no se usa persist() para no perder el ReplaceFileW de Windows).
+    let temp_path = named.into_temp_path();
     if let Err(e) = platform::atomic_replace(&tmp_path, &task.dst) {
-        let _ = fs::remove_file(&tmp_path).await;
+        // `temp_path` se dropea aquí y limpia el temporal.
         return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: e } };
+    }
+    match temp_path.keep() {
+        Ok(_) => {}
+        Err(e) => {
+            // keep() falló: el Drop del TempPath elimina dst → Failed exacto.
+            return FileResult::Failed { path: task.dst.clone(), error: CopyError::Io { path: task.dst.clone(), source: std::io::Error::from(e) } };
+        }
     }
 
     // --- metadatos post-rename (P1.3): mtime/atime + readonly Windows ---
@@ -456,10 +475,61 @@ async fn copy_file(
     FileResult::Copied { bytes: copied }
 }
 
-fn tmp_path_for(dst: &Path) -> PathBuf {
-    let mut s = dst.as_os_str().to_owned();
-    s.push(".copyforge.tmp");
-    PathBuf::from(s)
+/// Prefijo reconocible de los temporales de copia (P1.4). Una sola fuente
+/// para creación (`create_temp_in`) y limpieza (`cleanup_orphan_tmps`).
+const TEMP_PREFIX: &str = ".copyforge-tmp-";
+
+/// Antigüedad mínima para considerar un temporal huérfano (P1.4): evita
+/// borrar el temporal vivo de otra copia concurrente en el mismo directorio.
+/// Riesgo residual documentado: una copia que retenga su temporal más de
+/// una hora mientras otro run limpia podría ver su rename fallar (el
+/// reintento lo recupera; el origen jamás se toca).
+const ORPHAN_MAX_AGE_SECS: u64 = 3600;
+
+/// Crea un temporal único en el mismo directorio que `dst` (P1.4).
+///
+/// Mismo directorio = mismo filesystem = el rename posterior es atómico
+/// (entre FS distintos no lo sería). Sin `unwrap`/`expect`.
+fn create_temp_in(dst: &Path) -> std::io::Result<tempfile::NamedTempFile> {
+    let parent = dst.parent().filter(|p| !p.as_os_str().is_empty());
+    let dir = parent.unwrap_or(Path::new("."));
+    tempfile::Builder::new()
+        .prefix(TEMP_PREFIX)
+        .tempfile_in(dir)
+}
+
+/// Limpieza best-effort de temporales huérfanos (P1.4).
+///
+/// Recorre los directorios padre de las tareas (una sola profundidad por
+/// directorio, sin recursión) y elimina los ficheros `.copyforge-tmp-*`
+/// con antigüedad mayor a `ORPHAN_MAX_AGE_SECS`. Los errores se ignoran.
+/// Sin `unwrap`/`expect`.
+async fn cleanup_orphan_tmps(tasks: &[CopyTask]) {
+    use std::collections::HashSet;
+    let mut seen: HashSet<&Path> = HashSet::new();
+    for task in tasks {
+        let Some(parent) = task.dst.parent() else { continue };
+        if !seen.insert(parent) {
+            continue;
+        }
+        let Ok(mut rd) = fs::read_dir(parent).await else { continue };
+        while let Ok(Some(ent)) = rd.next_entry().await {
+            if !ent.file_name().to_string_lossy().starts_with(TEMP_PREFIX) {
+                continue;
+            }
+            let old_enough = ent
+                .metadata()
+                .await
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| std::time::SystemTime::now().duration_since(t).ok())
+                .map(|age| age.as_secs() >= ORPHAN_MAX_AGE_SECS)
+                .unwrap_or(false);
+            if old_enough {
+                let _ = fs::remove_file(ent.path()).await;
+            }
+        }
+    }
 }
 
 /// Fase pre-rename de [`DurabilityPolicy`]: asegura los datos del temporal.
@@ -675,5 +745,80 @@ mod tests {
             }
         }
         assert_eq!(identical, 1);
+    }
+
+    // P1.4: un fallo a mitad de copia (aquí, size declarado != real, que
+    // falla en la verificación) no debe dejar `.copyforge-tmp-*` atrás:
+    // el Drop del NamedTempFile limpia solo.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_copy_leaves_no_temp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("a.txt");
+        std::fs::write(&src, b"12345").unwrap();
+        let dst = tmp.path().join("b.txt");
+        let opts = CopyOptions::default();
+        let plan = CopyPlan {
+            tasks: vec![CopyTask {
+                src: src.clone(),
+                dst: dst.clone(),
+                size: 5000,
+                kind: TaskKind::File,
+            }],
+            options: opts.clone(),
+            total_bytes: 5000,
+        };
+        let (tx, _rx) = mpsc::channel(64);
+        let report = CopyEngine::new(opts, tx).run(plan).await;
+        assert_eq!(report.files_failed, 1);
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".copyforge-tmp-")
+            })
+            .collect();
+        assert!(leftovers.is_empty());
+    }
+
+    // P1.4: un huérfano antiguo se elimina al inicio de run().
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_cleans_stale_temp_orphans() {
+        let tmp = tempfile::tempdir().unwrap();
+        let orphan = tmp.path().join(".copyforge-tmp-manual");
+        std::fs::write(&orphan, b"stale").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        filetime::set_file_mtime(&orphan, filetime::FileTime::from_system_time(old)).unwrap();
+        let src = tmp.path().join("a.txt");
+        std::fs::write(&src, b"data").unwrap();
+        let dst = tmp.path().join("b.txt");
+        let opts = CopyOptions::default();
+        let plan = crate::scanner::build_plan(&src, &dst, &opts).unwrap();
+        let (tx, _rx) = mpsc::channel(64);
+        let report = CopyEngine::new(opts, tx).run(plan).await;
+        assert_eq!(report.files_copied, 1);
+        assert!(!orphan.exists());
+    }
+
+    // P1.4: el gate de antigüedad protege el temporal vivo de otra copia
+    // concurrente: un huérfano RECIENTE no se toca.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_keeps_fresh_temp_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fresh = tmp.path().join(".copyforge-tmp-live");
+        std::fs::write(&fresh, b"live").unwrap();
+        let src = tmp.path().join("a.txt");
+        std::fs::write(&src, b"data").unwrap();
+        let dst = tmp.path().join("b.txt");
+        let opts = CopyOptions::default();
+        let plan = crate::scanner::build_plan(&src, &dst, &opts).unwrap();
+        let (tx, _rx) = mpsc::channel(64);
+        let report = CopyEngine::new(opts, tx).run(plan).await;
+        assert_eq!(report.files_copied, 1);
+        assert!(fresh.exists());
     }
 }

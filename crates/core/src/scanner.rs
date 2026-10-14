@@ -164,6 +164,13 @@ fn external_tree_bytes(target: &Path) -> u64 {
 }
 
 pub fn build_plan(src: &Path, dst: &Path, options: &CopyOptions) -> Result<CopyPlan, CopyError> {
+    // Nota P1.4: no hay lista de exclusiones por defecto para temporales
+    // (solo `options.exclusion` del usuario). Los `.copyforge-tmp-*`
+    // huérfanos se limpian al inicio de `CopyEngine::run`, es decir, DESPUÉS
+    // de construir el plan: un re-run puede planificar un huérfano como una
+    // tarea que fallará de forma benigna (el fichero ya no existe). Para
+    // excluirlos del plan, pasar `-x ".copyforge-tmp-*"` (raíz) o
+    // `-x "**/.copyforge-tmp-*"` (cualquier profundidad).
     // P0.5: validar antes de cualquier IO (H-4): src==dst y dst⊂src.
     validate_paths(src, dst)?;
 
