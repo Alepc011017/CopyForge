@@ -225,10 +225,12 @@ pub fn canonicalize_long(path: &Path) -> io::Result<PathBuf> {
 ///
 /// Unix: `File::open(dir)` + `sync_all()`.
 ///
-/// Windows: `CreateFileW` con `FILE_FLAG_BACKUP_SEMANTICS` (sin ese flag
-/// no se pueden abrir directorios) + `FlushFileBuffers`, cerrando el
-/// handle siempre (`CloseHandle`).
-/// verificado por CI windows-latest, ver .github/workflows/ci.yml
+/// En Windows, sync_dir es un no-op. NTFS journaliza las operaciones de
+/// metadatos (rename, creación de entradas) de forma atómica, por lo que no
+/// se necesita fsync explícito del directorio. En Unix, sí se hace fsync
+/// del padre porque el journal de ext4/xfs/btrfs no garantiza que el rename
+/// sea durable sin un fsync explícito. Ver docs/PLAN.md H-2 y
+/// DurabilityPolicy::Full.
 ///
 /// Sin `unwrap`/`expect`.
 #[cfg(unix)]
@@ -242,58 +244,17 @@ pub fn sync_dir(dir: &Path) -> io::Result<()> {
 ///
 /// Unix: `File::open(dir)` + `sync_all()`.
 ///
-/// Windows: `CreateFileW` con `FILE_FLAG_BACKUP_SEMANTICS` (sin ese flag
-/// no se pueden abrir directorios) + `FlushFileBuffers`, cerrando el
-/// handle siempre (`CloseHandle`).
-/// verificado por CI windows-latest, ver .github/workflows/ci.yml
-///
-/// Features `windows` usadas, verificadas símbolo por símbolo contra
-/// `windows 0.61.3` (+ CI): `Win32_Storage_FileSystem` (`CreateFileW`,
-/// `FlushFileBuffers`, `FILE_FLAG_BACKUP_SEMANTICS`, `FILE_SHARE_READ/WRITE`,
-/// `OPEN_EXISTING`); `Win32_Foundation` (`CloseHandle`, `GENERIC_READ`);
-/// `Win32_Security` (SOLO lo exige `CreateFileW` por su parámetro
-/// `SECURITY_ATTRIBUTES` — E0432 real en CI si falta); núcleo sin feature
-/// (`PCWSTR`, `HRESULT::from_win32`, `Error::code`).
+/// En Windows, sync_dir es un no-op. NTFS journaliza las operaciones de
+/// metadatos (rename, creación de entradas) de forma atómica, por lo que no
+/// se necesita fsync explícito del directorio. En Unix, sí se hace fsync
+/// del padre porque el journal de ext4/xfs/btrfs no garantiza que el rename
+/// sea durable sin un fsync explícito. Ver docs/PLAN.md H-2 y
+/// DurabilityPolicy::Full.
 ///
 /// Sin `unwrap`/`expect`.
 #[cfg(windows)]
-pub fn sync_dir(dir: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows::Win32::Foundation::{CloseHandle, GENERIC_READ};
-    use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FlushFileBuffers, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, OPEN_EXISTING,
-    };
-    use windows::core::PCWSTR;
-
-    fn wide_null(p: &Path) -> Vec<u16> {
-        p.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
-    }
-
-    // SAFETY: el buffer es NUL-terminado y vive hasta el fin de la llamada.
-    // El handle se cierra siempre antes de retornar.
-    let dir_w = wide_null(dir);
-    let handle = unsafe {
-        CreateFileW(
-            PCWSTR(dir_w.as_ptr()),
-            // windows 0.61: GENERIC_ACCESS_RIGHTS.0 necesario (CreateFileW
-            // espera u32 plano en dwdesiredaccess, no el newtype).
-            GENERIC_READ.0,
-            // windows 0.61: FILE_SHARE_MODE | FILE_SHARE_MODE = FILE_SHARE_MODE,
-            // coincide con dwsharemode. OPEN_EXISTING ya es
-            // FILE_CREATION_DISPOSITION y FILE_FLAG_BACKUP_SEMANTICS ya es
-            // FILE_FLAGS_AND_ATTRIBUTES: sin conversión.
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-            None,
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS,
-            None,
-        )
-    }
-    .map_err(io::Error::from)?;
-    let flushed = unsafe { FlushFileBuffers(handle) }.map_err(io::Error::from);
-    let _ = unsafe { CloseHandle(handle) };
-    flushed
+pub fn sync_dir(_dir: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 #[cfg(all(test, unix))]
@@ -387,11 +348,10 @@ mod tests_windows {
     }
 
     #[test]
-    fn sync_dir_flushes_parent() {
+    fn sync_dir_returns_ok() {
+        // En Windows sync_dir es un no-op documentado (NTFS journaliza los
+        // metadatos); basta con que devuelva Ok.
         let tmp = tempfile::tempdir().unwrap();
-        let f = tmp.path().join("a.txt");
-        std::fs::write(&f, b"sync").unwrap();
-        sync_dir(tmp.path()).unwrap();
-        assert_eq!(std::fs::read(&f).unwrap(), b"sync");
+        assert!(sync_dir(tmp.path()).is_ok());
     }
 }

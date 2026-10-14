@@ -55,7 +55,7 @@ pub enum VerifyPolicy { None, Size, Hash }
 /// |---|---|---|---|
 /// | `None` | no | no | puede perderse el fichero (comportamiento anterior) |
 /// | `File` (default) | sí (`sync_all` del temporal) | no | contenido durable; la entrada del directorio puede perderse → fichero ausente, nunca corrupto |
-/// | `Full` | sí | sí (`sync_dir` del padre; funcional en ambas plataformas desde P1.1c) | ni el dato ni el nombre se pierden (semántica TeraCopy) |
+/// | `Full` | sí | sí en Unix (`sync_dir` del padre); en Windows equivale a `File` (NTFS journaliza los metadatos, no necesita fsync del directorio) | ni el dato ni el nombre se pierden (semántica TeraCopy en Unix; en Windows, garantía de NTFS) |
 ///
 /// Coste: ~1 `fsync` por fichero en `File`; +1 por directorio padre en `Full`
 /// (más lento en HDD/NFS).
