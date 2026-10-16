@@ -45,6 +45,12 @@
 - **P2.2** ⏳ Pendiente — GUI: exponer `overwrite/verify/jobs/exclude`; botón Cancelar conectado al token; fix `/0`; etiqueta "bytes" en vez de "archivos"; `Handle` global en vez de `Runtime` por copia; `rfd::AsyncFileDialog`. Afecta `apps/gui/src/app.rs:58,69-74,97,117,303-307`.
 - **P2.3** ⏳ Pendiente — Progreso coherente con skips (H-5): `total_bytes` debe decrementarse con `SkipReason::{Identical,Excluded,NewerExists}`; el progreso llega a 100%. Afecta `engine.rs:34-36`, `apps/cli/src/ui.rs`, `apps/gui/src/app.rs:303-307`.
 - **P2.4** ⏳ Pendiente — Semántica dir→dir idempotente (H-11): flag `--sync` o `--mirror` para copiar `src` → `dst` directamente sin anidar. Discutir semántica exacta (mirror vs merge) antes de implementar. Afecta `scanner.rs` (`build_effective_dest`), `apps/cli` args, `apps/gui` options.
+- **P2.5** ⏳ Candidato — Cleanup de gates `#[cfg(unix)]` innecesarios (diagnóstico, sin tocar código): estos tests solo usan APIs portables (`tempfile`, `filetime`, engine, `std::fs`) y podrían correr en el CI Windows quitando el gate:
+  - `engine.rs:734` `preserve_metadata_keeps_mtime` (mtime fijado vía `filetime`, tolerancia ±1s válida en NTFS).
+  - `engine.rs:794` `failed_copy_leaves_no_temp` (plan manual + `read_dir`, 100% portable).
+  - `engine.rs:828` `run_cleans_stale_temp_orphans` (`filetime` portable).
+  - `engine.rs:849` `run_keeps_fresh_temp_files` (trivialmente portable).
+  - NO candidatos (genuinamente específicos): `engine.rs:868` `symlink_recreate_still_works` (crear symlinks exige privilegio en Windows; opcional: pasar a `cfg_attr(windows, ignore)` como los 4 de scanner para cobertura de compilación); impls `platform.rs` con `std::os::unix::*`, `MetadataExt` y ramas de detección de ciclos en `scanner.rs`; `apps/cli/src/runner.rs:135` es un comentario, no un gate.
 
 ## P3 — Tests y robustez
 
@@ -108,3 +114,38 @@
   - Fix aplicado (P1.4-fix1): eliminar `keep()`; tras rename exitoso no hay nada que conservar y el `Drop` del `TempPath` es no-op sobre el path movido.
   - Seguimiento: el flag `TEMPORARY` viaja con el rename al `dst`; si `Full` en Windows quiere quitarlo, hacerlo con `SetFileAttributesW` sobre el `dst`, no vía `keep()`.
   - Estado: ✅ Hecho.
+
+## P4 — Migración de la GUI de egui a Iced
+
+Fase nueva. Decisión de producto: reescribir apps/gui con Iced para obtener una UI
+más moderna, con arquitectura Elm-like (State/Message/update/view) más mantenible que
+el immediate-mode de egui. El motor (crates/core) no se toca en ninguna parte de esta fase.
+
+Contexto: P2.2a dejó GuiOptions encapsulando todo el estado editable de la GUI, lo que
+convierte la migración en un mapeo casi 1:1 (GuiOptions → State, controles → Message).
+El riesgo principal es que Iced está etiquetado como "experimental" en 0.x y su API
+cambia entre versiones menores; mitigación: fijar la versión en Cargo.toml (iced = "0.14")
+y no actualizar sin revisar el CHANGELOG.
+
+- **P4.0** ✅ Hecho — Prototipo mínimo de Iced aislado del workspace (`d924f82`, con API real 0.14: `Task`, `application(boot, update, view)`, sin `Command`).
+  - **Origen**: decisión de migrar la GUI (evaluación entre Iced, Tauri 2 y GTK-rs).
+  - **Objetivo**: validar que Iced compila y renderiza correctamente en el sistema del
+    desarrollador antes de comprometerse con la migración completa.
+  - **Alcance**:
+    - Rama feature/gui-iced.
+    - Crate nuevo "iced-proto" fuera del workspace principal (aislado).
+    - Ventana con título "CopyForge Proto".
+    - Un checkbox (Toggler) "Preserve metadata".
+    - Un pick_list para overwrite con 4 opciones (Never, IfNewer, IfDifferent, Always).
+    - Un botón "Simular copia" que actualice un texto con el estado actual.
+    - iced = "0.14" fijado en Cargo.toml.
+  - **Archivos afectados**: ninguno del workspace actual (crate aislado en rama nueva).
+  - **Criterio de éxito**: el proto compila, arranca en Linux, y al pulsar el botón el
+    texto refleja el estado de las opciones. Captura de pantalla o salida de cargo run.
+  - **Bloqueantes**: ninguno.
+
+- **P4.1** ✅ Hecho — Migrar GuiOptions → State de Iced (`6eaf243`, 6 tests; `GuiOptions` nuevo porque egui no lo exponía).
+- **P4.2** 🔄 En curso — Migrar controles → Message + update.
+- **P4.3** ⏳ Pendiente — Conectar CopyEngine + cancelación.
+- **P4.4** ⏳ Pendiente — Migrar render de progreso y reporte final.
+- **P4.5** ⏳ Pendiente — Deprecar apps/gui (egui) y promover apps/gui-iced.

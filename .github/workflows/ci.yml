@@ -18,6 +18,10 @@ jobs:
         with:
           toolchain: stable
           components: clippy
+      # Deps de sistema para compilar crates con Iced/wgpu (winit necesita
+      # xkbcommon + wayland; wgpu necesita Vulkan). En Windows no hace falta.
+      - name: Install GUI deps
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libvulkan-dev
       - name: Tests
         run: cargo test --workspace
       - name: Clippy estricto
