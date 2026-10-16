@@ -124,10 +124,10 @@ el immediate-mode de egui. El motor (crates/core) no se toca en ninguna parte de
 Contexto: P2.2a dejó GuiOptions encapsulando todo el estado editable de la GUI, lo que
 convierte la migración en un mapeo casi 1:1 (GuiOptions → State, controles → Message).
 El riesgo principal es que Iced está etiquetado como "experimental" en 0.x y su API
-cambia entre versiones menores; mitigación: fijar la versión en Cargo.toml (iced = "0.13")
+cambia entre versiones menores; mitigación: fijar la versión en Cargo.toml (iced = "0.14")
 y no actualizar sin revisar el CHANGELOG.
 
-- **P4.0** ⏳ Pendiente — Prototipo mínimo de Iced aislado del workspace.
+- **P4.0** ✅ Hecho — Prototipo mínimo de Iced aislado del workspace (`d924f82`, con API real 0.14: `Task`, `application(boot, update, view)`, sin `Command`).
   - **Origen**: decisión de migrar la GUI (evaluación entre Iced, Tauri 2 y GTK-rs).
   - **Objetivo**: validar que Iced compila y renderiza correctamente en el sistema del
     desarrollador antes de comprometerse con la migración completa.
@@ -138,14 +138,14 @@ y no actualizar sin revisar el CHANGELOG.
     - Un checkbox (Toggler) "Preserve metadata".
     - Un pick_list para overwrite con 4 opciones (Never, IfNewer, IfDifferent, Always).
     - Un botón "Simular copia" que actualice un texto con el estado actual.
-    - iced = "0.13" fijado en Cargo.toml.
+    - iced = "0.14" fijado en Cargo.toml.
   - **Archivos afectados**: ninguno del workspace actual (crate aislado en rama nueva).
   - **Criterio de éxito**: el proto compila, arranca en Linux, y al pulsar el botón el
     texto refleja el estado de las opciones. Captura de pantalla o salida de cargo run.
   - **Bloqueantes**: ninguno.
 
-- **P4.1** ⏳ Pendiente — Migrar GuiOptions → State de Iced.
-- **P4.2** ⏳ Pendiente — Migrar controles → Message + update.
+- **P4.1** ✅ Hecho — Migrar GuiOptions → State de Iced (`6eaf243`, 6 tests; `GuiOptions` nuevo porque egui no lo exponía).
+- **P4.2** 🔄 En curso — Migrar controles → Message + update.
 - **P4.3** ⏳ Pendiente — Conectar CopyEngine + cancelación.
 - **P4.4** ⏳ Pendiente — Migrar render de progreso y reporte final.
 - **P4.5** ⏳ Pendiente — Deprecar apps/gui (egui) y promover apps/gui-iced.

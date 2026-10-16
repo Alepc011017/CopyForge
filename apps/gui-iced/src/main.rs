@@ -323,12 +323,31 @@ mod tests {
     }
 
     #[test]
-    fn change_exclude_and_durability_update() {
+    fn change_exclude_updates_field() {
         let mut s = fresh_state();
         let _ = update(&mut s, Message::ChangeExclude(String::from("*.log")));
         assert_eq!(s.options.exclude, "*.log");
+    }
+
+    #[test]
+    fn change_durability_updates_field() {
+        let mut s = fresh_state();
         let _ = update(&mut s, Message::ChangeDurability(DurabilityPolicy::Full));
         assert_eq!(s.options.durability, DurabilityPolicy::Full);
+    }
+
+    #[test]
+    fn initial_state_matches_cli_defaults() {
+        // Paridad con apps/cli/src/args.rs: overwrite=Always, verify=Size,
+        // jobs=4, durability=File, preserve=true (!no_preserve), exclude=[].
+        // (gui-iced no depende de apps/cli; se comparan los literales.)
+        let s = fresh_state();
+        assert!(s.options.preserve_metadata);
+        assert_eq!(s.options.overwrite, OverwritePolicy::Always);
+        assert_eq!(s.options.verify, VerifyPolicy::Size);
+        assert_eq!(s.options.jobs, 4);
+        assert_eq!(s.options.durability, DurabilityPolicy::File);
+        assert!(s.options.exclude.is_empty());
     }
 
     #[test]
