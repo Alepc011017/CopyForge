@@ -1,17 +1,18 @@
-/* CopyForge GUI — estilo escritorio moderno: denso pero limpio,
+/* CopyForge GUI — panel de monitorización de escritorio: denso pero limpio,
    esquinas redondeadas, bordes sutiles y tipografía del sistema. */
 
 :root {
-  --bg: #f9f9f9;
+  --bg: #f3f3f3;
   --surface: #ffffff;
-  --border: #e0e0e0;
-  --border-strong: #d0d7de;
-  --text: #1f2328;
-  --text-muted: #57606a;
-  --accent: #2ea44f;
-  --danger: #cf222e;
+  --border: #d1d5db;
+  --border-soft: #e5e7eb;
+  --text: #111827;
+  --text-muted: #6b7280;
+  --accent: #2563eb; /* progreso global */
+  --accent-file: #10b981; /* progreso del fichero en curso */
+  --danger: #dc2626;
   --hover: #f3f4f6;
-  --active: #eaeef2;
+  --active: #e5e7eb;
 }
 
 * {
@@ -28,65 +29,134 @@ body,
 }
 
 .tf-window {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
   background: var(--bg);
   color: var(--text);
   font: 13px/1.45 "Segoe UI", "Inter", system-ui, sans-serif;
   padding: 12px;
-  min-height: 100vh;
   -webkit-font-smoothing: antialiased;
 }
 
-/* a) Filas Desde / Hacia */
-.tf-row {
+/* --- Rutas (solo lectura) ------------------------------------------------ */
+.tf-paths {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 14px;
 }
 
-.tf-label {
-  width: 56px;
-  flex: none;
+.tf-path {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 8px;
+}
+
+.tf-path-label {
   color: var(--text-muted);
 }
 
-.tf-input {
-  flex: 1;
-  min-width: 0;
-  font: inherit;
-  color: inherit;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 5px;
-  padding: 4px 8px;
-  transition: border-color 0.12s, box-shadow 0.12s;
+.tf-path-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
 }
 
-.tf-input:hover {
-  border-color: #b6bec7;
+/* --- Progreso (global + fichero) ---------------------------------------- */
+.tf-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
 }
 
-.tf-input:focus {
-  outline: none;
-  border-color: #0969da;
-  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.15);
+.tf-progress-row {
+  display: grid;
+  grid-template-columns: 92px 1fr 180px;
+  align-items: center;
+  gap: 12px;
+}
+
+.tf-percent {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.tf-percent-file {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tf-progress-track {
+  background: var(--border-soft);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.tf-track-global {
+  height: 14px;
+}
+
+.tf-track-file {
+  height: 8px;
+}
+
+.tf-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.25s ease;
+}
+
+.tf-fill-global {
+  background: var(--accent);
+}
+
+.tf-fill-file {
+  background: var(--accent-file);
+}
+
+.tf-progress-total {
+  text-align: right;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tf-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+/* --- Botones de acción -------------------------------------------------- */
+.tf-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 12px;
 }
 
 .tf-btn {
   font: inherit;
   color: var(--text);
   background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 5px;
-  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 14px;
   white-space: nowrap;
   cursor: pointer;
-  transition: background 0.12s, border-color 0.12s;
+  transition: background 0.12s, border-color 0.12s, box-shadow 0.12s;
 }
 
 .tf-btn:hover {
   background: var(--hover);
-  border-color: #b6bec7;
+  border-color: #b9bfc7;
 }
 
 .tf-btn:active {
@@ -95,54 +165,8 @@ body,
 
 .tf-btn:focus-visible {
   outline: none;
-  border-color: #0969da;
-  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.15);
-}
-
-/* b) Barra de progreso */
-.tf-progress-zone {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 14px 0 4px;
-}
-
-.tf-percent {
-  min-width: 92px;
-  font-size: 30px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  font-variant-numeric: tabular-nums;
-}
-
-.tf-progress-track {
-  flex: 1;
-  height: 16px;
-  background: #eaeef2;
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.tf-progress-fill {
-  height: 100%;
-  background: var(--accent);
-  border-radius: 8px;
-  transition: width 0.2s ease;
-}
-
-.tf-current {
-  margin: 2px 0 10px 104px; /* alineado con el inicio de la barra */
-  color: var(--text-muted);
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* c) Botones de acción */
-.tf-actions {
-  justify-content: flex-end;
-  margin: 10px 0;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
 }
 
 .tf-action {
@@ -150,11 +174,11 @@ body,
   font-weight: 500;
 }
 
-/* d) Barra de estado */
+/* --- Barra de estado ---------------------------------------------------- */
 .tf-statusbar {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-soft);
   padding: 6px 2px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
   font-size: 12px;
   color: var(--text-muted);
 }
@@ -164,7 +188,7 @@ body,
   font-weight: 600;
 }
 
-/* e) Pestañas + panel */
+/* --- Pestañas + panel --------------------------------------------------- */
 .tf-tabs {
   display: flex;
   gap: 4px;
@@ -175,7 +199,7 @@ body,
   background: transparent;
   border-color: transparent;
   border-bottom: 2px solid transparent;
-  border-radius: 5px 5px 0 0;
+  border-radius: 6px 6px 0 0;
   color: var(--text-muted);
   padding: 5px 12px;
 }
@@ -197,11 +221,13 @@ body,
 }
 
 .tf-tabpanel {
+  flex: 1;
+  min-height: 140px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 0 6px 6px 6px;
-  min-height: 150px;
   padding: 8px;
+  overflow: auto;
 }
 
 .tf-table {
@@ -211,7 +237,7 @@ body,
 }
 
 .tf-table th {
-  background: #f6f8fa;
+  background: #f9fafb;
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);
   font-size: 12px;
@@ -221,7 +247,7 @@ body,
 }
 
 .tf-table td {
-  border-bottom: 1px solid #eef0f2;
+  border-bottom: 1px solid #f1f2f4;
   padding: 6px 10px;
 }
 
@@ -230,12 +256,13 @@ body,
   color: var(--text-muted);
 }
 
-/* Panel de opciones */
+/* --- Panel de opciones -------------------------------------------------- */
 .tf-options {
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding: 10px;
+  max-width: 560px;
 }
 
 .tf-check {
@@ -248,7 +275,7 @@ body,
 .tf-check input[type="checkbox"] {
   width: 15px;
   height: 15px;
-  accent-color: #0969da;
+  accent-color: var(--accent);
   cursor: pointer;
 }
 
@@ -269,21 +296,41 @@ body,
   flex: 1;
 }
 
-select,
-.tf-optrow select {
+.tf-input {
+  min-width: 0;
   font: inherit;
   color: inherit;
   background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.tf-input:hover {
+  border-color: #b9bfc7;
+}
+
+.tf-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+}
+
+select {
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
   padding: 4px 8px;
   cursor: pointer;
 }
 
 select:focus {
   outline: none;
-  border-color: #0969da;
-  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.15);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
 }
 
 .tf-optrow .tf-jobs {

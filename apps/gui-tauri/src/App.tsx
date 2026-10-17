@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 
 type Tab = "lista" | "errores" | "opciones";
@@ -32,16 +31,25 @@ const DEFAULT_OPTIONS: GuiOptions = {
   durability: "File",
 };
 
-// Tabla dummy: 4 ficheros, el 2º en curso (coherente con "1 / 4" y el 64%).
+// --- Datos de la maqueta (en P4.3 los provee el motor real) ---------------
+const SRC_LABEL = "C:\\Descargas";
+const DST_LABEL = "D:\\Backup";
+const GLOBAL_PERCENT = 64;
+const GLOBAL_BYTES = "202.78 MB";
+const FILE_PERCENT = 86;
+const CURRENT_FILE = "SitioWebTVCesp.7z";
+const COMPLETED = "1 / 4 archivos completados";
+
+// Tabla dummy: 4 ficheros, el 2º en curso (coherente con las barras).
 const DUMMY_ROWS: CopyRow[] = [
   {
     fuente: "C:\\Descargas\\Manual.pdf",
-    estado: "OK",
+    estado: "Completado",
     destino: "D:\\Backup\\Manual.pdf",
   },
   {
     fuente: "C:\\Descargas\\SitioWebTVCesp.7z",
-    estado: "64%",
+    estado: "86%",
     destino: "D:\\Backup\\SitioWebTVCesp.7z",
   },
   {
@@ -56,14 +64,7 @@ const DUMMY_ROWS: CopyRow[] = [
   },
 ];
 
-async function pickInto(setter: (v: string) => void, directory: boolean) {
-  const sel = await open({ directory, multiple: false });
-  if (typeof sel === "string") setter(sel);
-}
-
 export default function App() {
-  const [origen, setOrigen] = useState("");
-  const [destino, setDestino] = useState("");
   const [tab, setTab] = useState<Tab>("lista");
   const [options, setOptions] = useState<GuiOptions>(DEFAULT_OPTIONS);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
@@ -89,58 +90,63 @@ export default function App() {
 
   return (
     <div className="tf-window">
-      {/* a) Origen / destino */}
-      <div className="tf-row">
-        <label className="tf-label">Desde:</label>
-        <input
-          className="tf-input"
-          type="text"
-          value={origen}
-          onChange={(e) => setOrigen(e.target.value)}
-        />
-        <button className="tf-btn" onClick={() => void pickInto(setOrigen, true)}>
-          Carpeta…
-        </button>
-        <button className="tf-btn" onClick={() => void pickInto(setOrigen, false)}>
-          Archivo…
-        </button>
-      </div>
-      <div className="tf-row">
-        <label className="tf-label">Hacia:</label>
-        <input
-          className="tf-input"
-          type="text"
-          value={destino}
-          onChange={(e) => setDestino(e.target.value)}
-        />
-        <button className="tf-btn" onClick={() => void pickInto(setDestino, true)}>
-          Carpeta…
-        </button>
-      </div>
-
-      {/* b) Progreso grande */}
-      <div className="tf-progress-zone">
-        <div className="tf-percent">64%</div>
-        <div className="tf-progress-track">
-          <div className="tf-progress-fill" style={{ width: "64%" }} />
+      {/* Rutas de origen/destino: solo lectura (las proveerá el motor en P4.3) */}
+      <div className="tf-paths">
+        <div className="tf-path">
+          <span className="tf-path-label">Desde:</span>
+          <span className="tf-path-value" title={SRC_LABEL}>
+            {SRC_LABEL}
+          </span>
         </div>
-        <div className="tf-current">SitioWebTVCesp.7z</div>
+        <div className="tf-path">
+          <span className="tf-path-label">Hacia:</span>
+          <span className="tf-path-value" title={DST_LABEL}>
+            {DST_LABEL}
+          </span>
+        </div>
       </div>
 
-      {/* c) Botones (maqueta, sin funcionalidad) */}
-      <div className="tf-row tf-actions">
+      {/* Progreso: global + fichero en curso */}
+      <div className="tf-progress">
+        <div className="tf-progress-row">
+          <span className="tf-percent">{GLOBAL_PERCENT}%</span>
+          <div className="tf-progress-track tf-track-global">
+            <div
+              className="tf-progress-fill tf-fill-global"
+              style={{ width: `${GLOBAL_PERCENT}%` }}
+            />
+          </div>
+          <span className="tf-progress-total">{GLOBAL_BYTES}</span>
+        </div>
+
+        <div className="tf-progress-row">
+          <span className="tf-percent-file">{FILE_PERCENT}%</span>
+          <div className="tf-progress-track tf-track-file">
+            <div
+              className="tf-progress-fill tf-fill-file"
+              style={{ width: `${FILE_PERCENT}%` }}
+            />
+          </div>
+          <span className="tf-current" title={CURRENT_FILE}>
+            {CURRENT_FILE}
+          </span>
+        </div>
+      </div>
+
+      {/* Acciones (maqueta, sin funcionalidad hasta P4.4) */}
+      <div className="tf-actions">
         <button className="tf-btn tf-action">Pausa</button>
         <button className="tf-btn tf-action">Pasar</button>
         <button className="tf-btn tf-action">Cancelar</button>
       </div>
 
-      {/* d) Barra de estado */}
+      {/* Barra de estado */}
       <div className="tf-statusbar">
-        1 / 4 · Total: 202.78 MB
+        {COMPLETED}
         {statusMsg && <span className="tf-status-error"> ⚠ {statusMsg}</span>}
       </div>
 
-      {/* e) Pestañas */}
+      {/* Pestañas */}
       <div className="tf-tabs">
         <button
           className={tab === "lista" ? "tf-btn tf-tab tf-tab-active" : "tf-btn tf-tab"}

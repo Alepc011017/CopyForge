@@ -170,10 +170,14 @@ el mismo motor Rust.
     registran con `tracing::info!` (deps `tracing` + `tracing-subscriber` en el
     backend). `exclude` (una línea) → `exclusion: Vec<String>`.
   - Frontend: interfaz TS, `get_options` al montar (error visible en la barra de
-    estado) y `set_options` en cada cambio de control.
-  - CSS: reescrito a escritorio moderno (sin `#ece9d8`/Tahoma/outset), paleta y
-    radios, progreso verde `#2ea44f`; estructura intacta (filas, barra, botones,
-    estado, pestañas).
+    estado) y `set_options` en cada cambio de control de la pestaña Opciones.
+  - UI de monitorización (no formulario): Origen/Destino como texto de solo
+    lectura (sin inputs ni diálogos de carpeta), dos barras de progreso (global
+    con % y bytes; por fichero con % y nombre), acciones a la derecha, barra de
+    estado y pestañas (Opciones alberga los controles de `GuiOptions`).
+  - CSS reescrito (sin `#ece9d8`/Tahoma/outset): fondo `#f3f3f3`, bordes
+    `#d1d5db` con radio 6px, progreso azul `#2563eb` (global) y verde `#10b981`
+    (fichero en curso), transiciones suaves.
   - 5 tests en el crate de Tauri (mapeo a defaults de core, parseo de `exclude`,
     round-trip, formato wire del payload de React).
 - **P4.3** ⏳ Pendiente — Conectar `CopyEngine` (spawn de copia + eventos `CopyEvent` →
