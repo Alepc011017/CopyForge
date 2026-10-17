@@ -1,19 +1,49 @@
 /* CopyForge GUI — panel de monitorización de escritorio: compacto pero limpio,
    esquinas redondeadas (6px), bordes sutiles y tipografía del sistema. */
 
+/* Paleta clara. El modo oscuro redefine estas mismas variables en
+   `:root.dark` (clase que React pone en <html> según el tema del sistema). */
 :root {
+  color-scheme: light;
   --bg: #f3f4f6;
   --surface: #ffffff;
+  --surface-alt: #f9fafb;
   --border: #d1d5db;
   --border-soft: #e5e7eb;
+  --border-hover: #b9bfc7;
+  --row-sep: #f1f2f4;
   --text: #111827;
   --text-muted: #6b7280;
   --accent: #2563eb; /* barra global */
   --accent-file: #10b981; /* barra del fichero en curso */
   --danger: #dc2626;
+  --warn: #b45309;
   --hover: #f3f4f6;
   --active: #e5e7eb;
+  --ring: rgba(37, 99, 235, 0.18);
+  --shadow: rgba(0, 0, 0, 0.14);
   --radius: 6px;
+}
+
+:root.dark {
+  color-scheme: dark;
+  --bg: #111418;
+  --surface: #1a1f26;
+  --surface-alt: #161b21;
+  --border: #333c48;
+  --border-soft: #262d36;
+  --border-hover: #46515f;
+  --row-sep: #232a33;
+  --text: #e6e9ee;
+  --text-muted: #9aa4b2;
+  --accent: #3b82f6;
+  --accent-file: #10b981;
+  --danger: #f87171;
+  --warn: #fbbf24;
+  --hover: #222831;
+  --active: #2b333d;
+  --ring: rgba(59, 130, 246, 0.35);
+  --shadow: rgba(0, 0, 0, 0.55);
 }
 
 * {
@@ -38,6 +68,62 @@ body,
   font: 13px/1.45 "Segoe UI", "Inter", system-ui, sans-serif;
   padding: 12px;
   -webkit-font-smoothing: antialiased;
+}
+
+/* --- Barra de título propia (la ventana va sin decoración del sistema) --- */
+.tf-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 30px;
+  /* Sangra hasta los bordes: cancela el padding de `.tf-window`. */
+  margin: -12px -12px 10px;
+  padding: 0 4px 0 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border-soft);
+  user-select: none;
+}
+
+.tf-titlebar-title {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tf-titlebar-controls {
+  display: flex;
+  gap: 2px;
+}
+
+.tf-titlebar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 24px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tf-titlebar-btn:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.tf-titlebar-close:hover {
+  color: #fff;
+  background: var(--danger);
 }
 
 /* --- Cabecera: icono + rutas -------------------------------------------- */
@@ -100,7 +186,6 @@ body,
 }
 
 .tf-file-row {
-  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -218,7 +303,7 @@ body,
 
 .tf-btn:hover {
   background: var(--hover);
-  border-color: #b9bfc7;
+  border-color: var(--border-hover);
 }
 
 .tf-btn:active {
@@ -228,7 +313,7 @@ body,
 .tf-btn:focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+  box-shadow: 0 0 0 3px var(--ring);
 }
 
 .tf-action {
@@ -250,45 +335,40 @@ body,
 }
 
 .tf-status-warn {
-  color: #b45309;
+  color: var(--warn);
   font-weight: 600;
 }
 
-/* --- Desplegable anclado al extremo derecho de la barra de archivo ------ */
-.tf-dropdown {
-  flex: none;
-}
-
+/* --- Panel de detalles: va en el flujo, justo debajo de la barra de archivo
+   y con su mismo ancho. La ventana crece con él (ver `adjust_window_size`). - */
 .tf-dropdown-btn {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
-  font-weight: 500;
-}
-
-.tf-dropdown-icon {
-  font-size: 14px;
-  line-height: 1;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
 }
 
 .tf-dropdown-caret {
-  font-size: 8px;
+  display: inline-block;
   color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1;
+  transition: transform 0.15s ease;
 }
 
-/* El panel toma el ancho de la fila: su borde derecho es el de la barra de
-   archivo y nunca se sale de la ventana. */
+.tf-caret-open {
+  transform: rotate(180deg);
+}
+
 .tf-dropdown-panel {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  left: 0;
-  z-index: 30;
+  margin-top: 6px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.14);
+  box-shadow: 0 12px 28px var(--shadow);
 }
 
 /* --- Pestañas estilo navegador (dentro del desplegable) ----------------- */
@@ -297,7 +377,7 @@ body,
   gap: 4px;
   align-items: flex-end;
   padding: 6px 6px 0;
-  background: #f9fafb;
+  background: var(--surface-alt);
   border-bottom: 1px solid var(--border);
   border-radius: var(--radius) var(--radius) 0 0;
 }
@@ -343,7 +423,7 @@ body,
 }
 
 .tf-table th {
-  background: #f9fafb;
+  background: var(--surface-alt);
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);
   font-size: 12px;
@@ -354,7 +434,7 @@ body,
 
 .tf-table td {
   overflow: hidden;
-  border-bottom: 1px solid #f1f2f4;
+  border-bottom: 1px solid var(--row-sep);
   padding: 6px 10px;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -417,13 +497,13 @@ body,
 }
 
 .tf-input:hover {
-  border-color: #b9bfc7;
+  border-color: var(--border-hover);
 }
 
 .tf-input:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+  box-shadow: 0 0 0 3px var(--ring);
 }
 
 select {
@@ -439,7 +519,7 @@ select {
 select:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+  box-shadow: 0 0 0 3px var(--ring);
 }
 
 .tf-optrow .tf-jobs {

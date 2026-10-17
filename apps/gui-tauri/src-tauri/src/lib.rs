@@ -173,6 +173,52 @@ fn set_options(options: GuiOptions) {
     tracing::info!(?mapped, "set_options");
 }
 
+/// Altura mínima lógica de la ventana: al cerrar el panel de detalles no debe
+/// quedar colapsada.
+const MIN_WINDOW_HEIGHT: f64 = 240.0;
+
+/// Altura destino al abrir (`expanded = true`) o cerrar el panel de detalles.
+///
+/// `delta_height` es la altura que ocupa el panel en px lógicos; se usa su valor
+/// absoluto porque el signo lo decide `expanded`.
+fn next_window_height(current: f64, expanded: bool, delta_height: f64) -> f64 {
+    let delta = delta_height.abs();
+    let target = if expanded { current + delta } else { current - delta };
+    target.max(MIN_WINDOW_HEIGHT)
+}
+
+/// Suma (o resta) la altura del panel de detalles a la ventana.
+///
+/// Es el *fallback* de `Window.setSize()` del frontend: hay versiones de Tauri 2
+/// en las que el `setSize` lanzado desde el webview no surte efecto cuando la
+/// ventana va sin decoración del sistema (`decorations: false`). La UI intenta
+/// primero el camino JS y, si falla, invoca este comando.
+#[tauri::command]
+fn adjust_window_size(
+    window: tauri::Window,
+    expanded: bool,
+    delta_height: f64,
+) -> Result<(), String> {
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let current = window
+        .inner_size()
+        .map_err(|e| e.to_string())?
+        .to_logical::<f64>(scale);
+    let height = next_window_height(current.height, expanded, delta_height);
+
+    window
+        .set_size(tauri::LogicalSize::new(current.width, height))
+        .map_err(|e| e.to_string())?;
+
+    tracing::info!(
+        expanded,
+        delta_height,
+        logical_height = height,
+        "adjust_window_size"
+    );
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Sin subscriber, `tracing::info!` sería un no-op. Esto hace visibles los
@@ -184,7 +230,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![get_options, set_options])
+        .invoke_handler(tauri::generate_handler![
+            get_options,
+            set_options,
+            adjust_window_size
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -243,6 +293,19 @@ mod tests {
         assert!(json.contains("\"Always\""), "json: {json}");
         assert!(json.contains("\"Size\""), "json: {json}");
         assert!(json.contains("\"File\""), "json: {json}");
+    }
+
+    #[test]
+    fn window_height_follows_the_panel() {
+        assert_eq!(next_window_height(600.0, true, 121.0), 721.0);
+        assert_eq!(next_window_height(721.0, false, 121.0), 600.0);
+    }
+
+    #[test]
+    fn window_height_never_collapses_below_the_minimum() {
+        // El signo lo decide `expanded`, no el signo de `delta_height`.
+        assert_eq!(next_window_height(300.0, false, 500.0), MIN_WINDOW_HEIGHT);
+        assert_eq!(next_window_height(300.0, true, -50.0), 350.0);
     }
 
     #[test]
