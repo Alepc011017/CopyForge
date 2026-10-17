@@ -200,6 +200,11 @@ body,
   font-weight: 600;
 }
 
+.tf-status-warn {
+  color: #b45309;
+  font-weight: 600;
+}
+
 /* --- Menú desplegable de paneles ---------------------------------------- */
 .tf-menu {
   position: relative;

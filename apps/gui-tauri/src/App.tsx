@@ -22,6 +22,21 @@ interface GuiOptions {
   durability: string;
 }
 
+// `@tauri-apps/api/core` solo funciona dentro del webview de Tauri: su `invoke`
+// hace `window.__TAURI_INTERNALS__.invoke(...)`, así que fuera de Tauri (p. ej.
+// `npm run dev` en un navegador normal) lanza "Cannot read properties of
+// undefined (reading 'invoke')". Detectamos ese caso para avisar en vez de
+// romper la UI.
+const IS_TAURI =
+  typeof window !== "undefined" &&
+  ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
+
+const NO_BACKEND_MSG =
+  "Sin backend de Tauri: ejecuta `npm run tauri dev` (en un navegador no hay IPC). " +
+  "La pantalla es solo la maqueta.";
+
+type StatusMsg = { text: string; level: "warn" | "error" };
+
 // Valor inicial mientras responde `get_options` (coincide con el default Rust).
 const DEFAULT_OPTIONS: GuiOptions = {
   preserve_metadata: true,
@@ -77,17 +92,26 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("lista");
   const [menuOpen, setMenuOpen] = useState(false);
   const [options, setOptions] = useState<GuiOptions>(DEFAULT_OPTIONS);
-  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [statusMsg, setStatusMsg] = useState<StatusMsg | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Al montar: pide las opciones al backend (defaults del motor en P4.2).
   useEffect(() => {
+    if (!IS_TAURI) {
+      setStatusMsg({ text: NO_BACKEND_MSG, level: "warn" });
+      return;
+    }
     invoke<GuiOptions>("get_options")
       .then((opts) => {
         setOptions(opts);
         setStatusMsg(null);
       })
-      .catch((e) => setStatusMsg(`Error al cargar opciones: ${String(e)}`));
+      .catch((e) =>
+        setStatusMsg({
+          text: `Error al cargar opciones: ${String(e)}`,
+          level: "error",
+        }),
+      );
   }, []);
 
   // Cierra el menú al pulsar fuera o con Escape.
@@ -111,8 +135,13 @@ export default function App() {
   function applyOptions(patch: Partial<GuiOptions>) {
     const next = { ...options, ...patch };
     setOptions(next);
+    // Sin webview de Tauri no hay backend: la UI sigue siendo navegable.
+    if (!IS_TAURI) return;
     invoke("set_options", { options: next }).catch((e) =>
-      setStatusMsg(`Error al guardar opciones: ${String(e)}`),
+      setStatusMsg({
+        text: `Error al guardar opciones: ${String(e)}`,
+        level: "error",
+      }),
     );
   }
 
@@ -170,7 +199,16 @@ export default function App() {
       {/* Barra de estado */}
       <div className="tf-statusbar">
         {COMPLETED}
-        {statusMsg && <span className="tf-status-error"> ⚠ {statusMsg}</span>}
+        {statusMsg && (
+          <span
+            className={
+              statusMsg.level === "warn" ? "tf-status-warn" : "tf-status-error"
+            }
+          >
+            {" "}
+            ⚠ {statusMsg.text}
+          </span>
+        )}
       </div>
 
       {/* Menú desplegable de paneles */}
