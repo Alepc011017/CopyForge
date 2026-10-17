@@ -173,9 +173,10 @@ fn set_options(options: GuiOptions) {
     tracing::info!(?mapped, "set_options");
 }
 
-/// Altura mínima lógica de la ventana: al cerrar el panel de detalles no debe
-/// quedar colapsada.
-const MIN_WINDOW_HEIGHT: f64 = 240.0;
+/// Altura mínima lógica de la ventana (coincide con la base de `tauri.conf.json`
+/// y con `BASE_WINDOW_HEIGHT` del frontend): al cerrar el panel de detalles no
+/// debe quedar colapsada.
+const MIN_WINDOW_HEIGHT: f64 = 250.0;
 
 /// Altura destino al abrir (`expanded = true`) o cerrar el panel de detalles.
 ///

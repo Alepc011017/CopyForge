@@ -67,6 +67,28 @@ const PANEL_LABELS: Record<Tab, string> = {
 // Orden de las pestañas del desplegable (estilo navegador).
 const PANELS: Tab[] = ["lista", "opciones", "errores"];
 
+// Etiquetas en español de los valores de `GuiOptions`: la clave es lo que viaja al
+// backend (inglés, tal cual lo espera el serde de Rust) y el valor es lo que ve el
+// usuario. Traducir solo la etiqueta (<option>/label), nunca el `value`.
+const OVERWRITE_LABELS: Record<string, string> = {
+  Never: "Nunca",
+  IfNewer: "Si es más nuevo",
+  IfDifferent: "Si es diferente",
+  Always: "Siempre",
+};
+
+const VERIFY_LABELS: Record<string, string> = {
+  None: "Ninguna",
+  Size: "Tamaño",
+  Hash: "Hash",
+};
+
+const DURABILITY_LABELS: Record<string, string> = {
+  None: "Ninguna",
+  File: "Archivo",
+  Full: "Completa",
+};
+
 // --- Datos de la maqueta (en P4.3 los provee el motor real) ---------------
 const SRC_LABEL = "C:\\Descargas";
 const DST_LABEL = "D:\\Backup";
@@ -82,9 +104,9 @@ const DISK_USAGE = 68; // dummy: en P4.3 vendrá del motor
 // abrir el panel de detalles la ventana crece hacia abajo lo que ocupa el panel
 // más esta separación.
 const BASE_WINDOW_WIDTH = 800; // px lógicos
-const BASE_WINDOW_HEIGHT = 350; // px lógicos
+const BASE_WINDOW_HEIGHT = 250; // px lógicos (coincide con `tauri.conf.json`)
 const PANEL_GAP = 6; // px lógicos (coincide con el `margin-top` del panel en CSS)
-const MIN_WINDOW_HEIGHT = 240; // px lógicos: la ventana no baja de aquí
+const MIN_WINDOW_HEIGHT = 250; // px lógicos: la ventana no baja de aquí
 
 // Tabla dummy: 16 ficheros, el 1º completado y el 2º en curso (coherente con las
 // barras). En P4.3 las filas las provee el motor.
@@ -219,11 +241,51 @@ export default function App() {
     };
   }, []);
 
+  // Aplica el tamaño de la ventana: ancho base y altura = base + alto del panel
+  // (cuando `expanded`). Si está maximizada y ya tiene sitio de sobra no se toca,
+  // porque redimensionarla la restauraría; si está maximizada pero el contenido no
+  // cabe, sí se ajusta (evita quedarse atascada por un estado maximizado obsoleto).
+  async function resizeWindow(expanded: boolean, deltaCss: number) {
+    if (!hasBackend()) return;
+    try {
+      const win = getCurrentWindow();
+      const scale = await win.scaleFactor();
+      const base = Math.round(BASE_WINDOW_HEIGHT * scale);
+      const pixels = Math.round(deltaCss * scale);
+      const height = Math.max(
+        Math.round(MIN_WINDOW_HEIGHT * scale),
+        expanded ? base + pixels : base,
+      );
+      const inner = await win.innerSize();
+      if ((await win.isMaximized()) && inner.height >= height) return;
+      try {
+        await win.setSize(
+          new PhysicalSize(Math.round(BASE_WINDOW_WIDTH * scale), height),
+        );
+      } catch (e) {
+        // Bug conocido de Tauri 2: con `decorations: false` el `setSize` del
+        // webview puede no surtir efecto; en ese caso lo hace el backend.
+        await invoke("adjust_window_size", { expanded, deltaHeight: deltaCss });
+        console.warn("[CopyForge] setSize falló; redimensionado desde Rust:", e);
+      }
+    } catch (e) {
+      setStatusMsg({
+        text: `No se pudo redimensionar la ventana: ${String(e)}`,
+        level: "warn",
+      });
+    }
+  }
+
+  // Arranque: fija la base 800x250 aunque el gestor de ventanas recuerde otra
+  // geometría para el mismo `identifier`.
+  useEffect(() => {
+    void resizeWindow(false, 0);
+  }, []);
+
   // La ventana crece (o se encoge) con el panel de detalles, que va en el flujo:
   // el objetivo es siempre una altura absoluta sobre la base compacta (la ventana
   // no se redimensiona a mano, así que la base no cambia).
   useEffect(() => {
-    if (!hasBackend()) return;
     const panel = panelRef.current;
     const expanding = menuOpen && panel !== null;
     const deltaCss = expanding
@@ -234,42 +296,7 @@ export default function App() {
       return;
     }
     panelDeltaRef.current = expanding ? deltaCss : 0;
-
-    const win = getCurrentWindow();
-    void (async () => {
-      try {
-        const scale = await win.scaleFactor();
-        const base = Math.round(BASE_WINDOW_HEIGHT * scale);
-        const pixels = Math.round(deltaCss * scale);
-        const height = Math.max(
-          Math.round(MIN_WINDOW_HEIGHT * scale),
-          expanding ? base + pixels : base,
-        );
-        const inner = await win.innerSize();
-        // Maximizada y con sitio de sobra no se toca: redimensionarla la
-        // restauraría. Si está maximizada pero el contenido no cabe, sí se
-        // ajusta (evita quedarse atascada por un estado maximizado obsoleto).
-        if ((await win.isMaximized()) && inner.height >= height) return;
-        try {
-          await win.setSize(
-            new PhysicalSize(Math.round(BASE_WINDOW_WIDTH * scale), height),
-          );
-        } catch (e) {
-          // Bug conocido de Tauri 2: con `decorations: false` el `setSize` del
-          // webview puede no surtir efecto; en ese caso lo hace el backend.
-          await invoke("adjust_window_size", {
-            expanded: expanding,
-            deltaHeight: deltaCss,
-          });
-          console.warn("[CopyForge] setSize falló; redimensionado desde Rust:", e);
-        }
-      } catch (e) {
-        setStatusMsg({
-          text: `No se pudo redimensionar la ventana: ${String(e)}`,
-          level: "warn",
-        });
-      }
-    })();
+    void resizeWindow(expanding, deltaCss);
   }, [menuOpen, tab]);
 
   // Botones de la barra de título (la ventana va sin decoración del sistema).
@@ -467,36 +494,39 @@ export default function App() {
                             applyOptions({ preserve_metadata: e.target.checked })
                           }
                         />
-                        Preserve metadata
+                        Preservar metadatos
                       </label>
 
                       <label className="tf-optrow">
-                        <span className="tf-optlabel">Overwrite:</span>
+                        <span className="tf-optlabel">Sobrescribir:</span>
                         <select
                           value={options.overwrite}
                           onChange={(e) => applyOptions({ overwrite: e.target.value })}
                         >
-                          <option>Never</option>
-                          <option>IfNewer</option>
-                          <option>IfDifferent</option>
-                          <option>Always</option>
+                          {Object.entries(OVERWRITE_LABELS).map(([value, text]) => (
+                            <option key={value} value={value}>
+                              {text}
+                            </option>
+                          ))}
                         </select>
                       </label>
 
                       <label className="tf-optrow">
-                        <span className="tf-optlabel">Verify:</span>
+                        <span className="tf-optlabel">Verificar:</span>
                         <select
                           value={options.verify}
                           onChange={(e) => applyOptions({ verify: e.target.value })}
                         >
-                          <option>None</option>
-                          <option>Size</option>
-                          <option>Hash</option>
+                          {Object.entries(VERIFY_LABELS).map(([value, text]) => (
+                            <option key={value} value={value}>
+                              {text}
+                            </option>
+                          ))}
                         </select>
                       </label>
 
                       <label className="tf-optrow">
-                        <span className="tf-optlabel">Jobs:</span>
+                        <span className="tf-optlabel">Hilos simultáneos:</span>
                         <input
                           className="tf-input tf-jobs"
                           type="number"
@@ -512,25 +542,27 @@ export default function App() {
                       </label>
 
                       <label className="tf-optrow">
-                        <span className="tf-optlabel">Exclude:</span>
+                        <span className="tf-optlabel">Excluir:</span>
                         <input
                           className="tf-input"
                           type="text"
-                          placeholder="*.log, target/**…"
+                          placeholder="*.log, target/**"
                           value={options.exclude}
                           onChange={(e) => applyOptions({ exclude: e.target.value })}
                         />
                       </label>
 
                       <label className="tf-optrow">
-                        <span className="tf-optlabel">Durability:</span>
+                        <span className="tf-optlabel">Durabilidad:</span>
                         <select
                           value={options.durability}
                           onChange={(e) => applyOptions({ durability: e.target.value })}
                         >
-                          <option>None</option>
-                          <option>File</option>
-                          <option>Full</option>
+                          {Object.entries(DURABILITY_LABELS).map(([value, text]) => (
+                            <option key={value} value={value}>
+                              {text}
+                            </option>
+                          ))}
                         </select>
                       </label>
                     </div>
@@ -543,7 +575,7 @@ export default function App() {
 
         <section className="tf-col-right">
           <button className="tf-btn tf-action">Pausa</button>
-          <button className="tf-btn tf-action">Pasar</button>
+          <button className="tf-btn tf-action">Saltar</button>
 
           <div className="tf-disk">
             <span className="tf-disk-label">{DISK_LABEL}</span>
@@ -563,6 +595,7 @@ export default function App() {
             className={
               statusMsg.level === "warn" ? "tf-status-warn" : "tf-status-error"
             }
+            title={statusMsg.text}
           >
             ⚠ {statusMsg.text}
           </span>

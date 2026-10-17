@@ -68,6 +68,9 @@ body,
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* Suelo del contenedor: coincide con la base de la ventana (800x250) para que
+     el contenido no se recorte si el gestor de ventanas arranca por debajo. */
+  min-height: 250px;
   background: var(--bg);
   color: var(--text);
   font: 13px/1.45 "Segoe UI", "Inter", system-ui, sans-serif;
@@ -335,6 +338,17 @@ body,
   padding: 6px 2px;
   font-size: 12px;
   color: var(--text-muted);
+  /* Una sola línea con puntos suspensivos: a 250px de alto, un aviso de dos
+     líneas recortaría el fondo de la ventana (el texto completo va en `title`). */
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tf-statusbar span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tf-status-error {
@@ -494,7 +508,7 @@ body,
 }
 
 .tf-optlabel {
-  width: 90px;
+  width: 140px;
   flex: none;
   color: var(--text-muted);
 }
