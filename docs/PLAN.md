@@ -163,8 +163,19 @@ el mismo motor Rust.
     `identifier: com.copyforge.app`.
   - `README.md` reescrito: sin referencias al prototipo antiguo ni a su ruta; documenta
     arranque, aislamiento del workspace y el workaround de `libpng`.
-- **P4.2** ⏳ Pendiente — Conectar `GuiOptions`/`State` de React con comandos Tauri
-  (`#[tauri::command]`) para leer/escribir opciones.
+- **P4.2** ✅ Hecho — `GuiOptions` de React ↔ comandos Tauri (`431c40d`) + UI moderna.
+  - Backend: DTO `GuiOptions` (`Serialize`/`Deserialize`) con enums espejo
+    (`OverwriteDto`/`VerifyDto`/`DurabilityDto`); `From`/`Into` con `CopyOptions`
+    (core no se toca: no tiene serde). Comandos `get_options`/`set_options`, que
+    registran con `tracing::info!` (deps `tracing` + `tracing-subscriber` en el
+    backend). `exclude` (una línea) → `exclusion: Vec<String>`.
+  - Frontend: interfaz TS, `get_options` al montar (error visible en la barra de
+    estado) y `set_options` en cada cambio de control.
+  - CSS: reescrito a escritorio moderno (sin `#ece9d8`/Tahoma/outset), paleta y
+    radios, progreso verde `#2ea44f`; estructura intacta (filas, barra, botones,
+    estado, pestañas).
+  - 5 tests en el crate de Tauri (mapeo a defaults de core, parseo de `exclude`,
+    round-trip, formato wire del payload de React).
 - **P4.3** ⏳ Pendiente — Conectar `CopyEngine` (spawn de copia + eventos `CopyEvent` →
   Tauri events → React).
 - **P4.4** ⏳ Pendiente — Cancelación/Pausa reales.

@@ -196,7 +196,7 @@ export default function App() {
               Preserve metadata
             </label>
             <label className="tf-optrow">
-              Overwrite:
+              <span className="tf-optlabel">Overwrite:</span>
               <select
                 value={options.overwrite}
                 onChange={(e) => applyOptions({ overwrite: e.target.value })}
@@ -208,7 +208,7 @@ export default function App() {
               </select>
             </label>
             <label className="tf-optrow">
-              Verify:
+              <span className="tf-optlabel">Verify:</span>
               <select
                 value={options.verify}
                 onChange={(e) => applyOptions({ verify: e.target.value })}
@@ -219,7 +219,7 @@ export default function App() {
               </select>
             </label>
             <label className="tf-optrow">
-              Jobs:
+              <span className="tf-optlabel">Jobs:</span>
               <input
                 className="tf-input tf-jobs"
                 type="number"
@@ -234,7 +234,7 @@ export default function App() {
               />
             </label>
             <label className="tf-optrow">
-              Exclude:
+              <span className="tf-optlabel">Exclude:</span>
               <input
                 className="tf-input"
                 type="text"
@@ -244,7 +244,7 @@ export default function App() {
               />
             </label>
             <label className="tf-optrow">
-              Durability:
+              <span className="tf-optlabel">Durability:</span>
               <select
                 value={options.durability}
                 onChange={(e) => applyOptions({ durability: e.target.value })}
