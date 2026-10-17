@@ -1,18 +1,19 @@
-/* CopyForge GUI — panel de monitorización de escritorio: denso pero limpio,
-   esquinas redondeadas, bordes sutiles y tipografía del sistema. */
+/* CopyForge GUI — panel de monitorización de escritorio: compacto pero limpio,
+   esquinas redondeadas (6px), bordes sutiles y tipografía del sistema. */
 
 :root {
-  --bg: #f3f3f3;
+  --bg: #f3f4f6;
   --surface: #ffffff;
   --border: #d1d5db;
   --border-soft: #e5e7eb;
   --text: #111827;
   --text-muted: #6b7280;
-  --accent: #2563eb; /* progreso global */
-  --accent-file: #10b981; /* progreso del fichero en curso */
+  --accent: #2563eb; /* barra global */
+  --accent-file: #10b981; /* barra del fichero en curso */
   --danger: #dc2626;
   --hover: #f3f4f6;
   --active: #e5e7eb;
+  --radius: 6px;
 }
 
 * {
@@ -39,17 +40,35 @@ body,
   -webkit-font-smoothing: antialiased;
 }
 
-/* --- Rutas (solo lectura) ------------------------------------------------ */
+/* --- Cabecera: icono + rutas -------------------------------------------- */
+.tf-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.tf-logo {
+  flex: none;
+  width: 64px;
+  height: 64px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  object-fit: contain;
+}
+
 .tf-paths {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  margin-bottom: 14px;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
 }
 
 .tf-path {
   display: grid;
-  grid-template-columns: 56px 1fr;
+  grid-template-columns: 64px 1fr;
   gap: 8px;
 }
 
@@ -64,7 +83,7 @@ body,
   user-select: text;
 }
 
-/* --- Progreso (global + fichero) ---------------------------------------- */
+/* --- Barras de progreso (texto centrado dentro) ------------------------- */
 .tf-progress {
   display: flex;
   flex-direction: column;
@@ -72,69 +91,62 @@ body,
   margin-bottom: 14px;
 }
 
-.tf-progress-row {
-  display: grid;
-  grid-template-columns: 92px 1fr 180px;
+.tf-bar {
+  position: relative;
+  display: flex;
   align-items: center;
-  gap: 12px;
-}
-
-.tf-percent {
-  font-size: 30px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  font-variant-numeric: tabular-nums;
-}
-
-.tf-percent-file {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.tf-progress-track {
+  justify-content: center;
   background: var(--border-soft);
-  border-radius: 999px;
+  border-radius: var(--radius);
   overflow: hidden;
 }
 
-.tf-track-global {
-  height: 14px;
+.tf-bar-global {
+  height: 40px;
 }
 
-.tf-track-file {
-  height: 8px;
+.tf-bar-file {
+  height: 28px;
 }
 
-.tf-progress-fill {
-  height: 100%;
-  border-radius: 999px;
-  transition: width 0.25s ease;
+.tf-bar-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: var(--radius);
+  transition: width 0.25s ease, background-color 0.25s ease;
 }
 
-.tf-fill-global {
+.tf-bar-fill-global {
   background: var(--accent);
 }
 
-.tf-fill-file {
+.tf-bar-fill-file {
   background: var(--accent-file);
 }
 
-.tf-progress-total {
-  text-align: right;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.tf-current {
+/* Texto por encima del relleno: blanco con sombra, legible sobre azul/verde. */
+.tf-bar-text {
+  position: relative;
+  z-index: 1;
+  padding: 0 10px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-muted);
 }
 
-/* --- Botones de acción -------------------------------------------------- */
+.tf-bar-text-global {
+  font-size: 15px;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Controles ---------------------------------------------------------- */
 .tf-actions {
   display: flex;
   justify-content: flex-end;
@@ -147,7 +159,7 @@ body,
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 4px 14px;
   white-space: nowrap;
   cursor: pointer;
@@ -188,44 +200,73 @@ body,
   font-weight: 600;
 }
 
-/* --- Pestañas + panel --------------------------------------------------- */
-.tf-tabs {
-  display: flex;
-  gap: 4px;
-  align-items: flex-end;
+/* --- Menú desplegable de paneles ---------------------------------------- */
+.tf-menu {
+  position: relative;
+  align-self: flex-start;
+  margin-bottom: 8px;
 }
 
-.tf-tab {
-  background: transparent;
-  border-color: transparent;
-  border-bottom: 2px solid transparent;
-  border-radius: 6px 6px 0 0;
-  color: var(--text-muted);
+.tf-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   padding: 5px 12px;
+  font-weight: 500;
 }
 
-.tf-tab:hover {
-  background: var(--hover);
-  border-color: transparent;
-  border-bottom-color: transparent;
+.tf-menu-icon {
+  font-size: 14px;
+  line-height: 1;
 }
 
-.tf-tab-active,
-.tf-tab-active:hover {
-  background: var(--surface);
-  border-color: var(--border);
-  border-bottom-color: var(--surface);
-  color: var(--text);
-  font-weight: 600;
-  margin-bottom: -1px;
+.tf-menu-caret {
+  font-size: 8px;
+  color: var(--text-muted);
 }
 
-.tf-tabpanel {
-  flex: 1;
-  min-height: 140px;
+.tf-menu-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  padding: 4px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 0 6px 6px 6px;
+  border-radius: var(--radius);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
+}
+
+.tf-menu-item {
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.tf-menu-item:hover {
+  background: var(--hover);
+}
+
+.tf-menu-item-active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* --- Panel -------------------------------------------------------------- */
+.tf-panel {
+  flex: 1;
+  min-height: 120px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   padding: 8px;
   overflow: auto;
 }
@@ -302,7 +343,7 @@ body,
   color: inherit;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 4px 8px;
   transition: border-color 0.12s, box-shadow 0.12s;
 }
@@ -322,7 +363,7 @@ select {
   color: inherit;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 4px 8px;
   cursor: pointer;
 }

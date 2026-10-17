@@ -1,0 +1,76 @@
+name: Tauri GUI
+
+# La GUI de Tauri vive en apps/gui-tauri, excluida del workspace de Cargo, así
+# que el CI principal (ci.yml) no la compila. Este workflow la verifica aparte:
+# frontend (tsc + vite) y crate de Tauri (check + test) sin tocar el workspace.
+on:
+  push:
+    branches: [feature/gui-tauri, main]
+  pull_request:
+    branches: [feature/gui-tauri, main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-tauri:
+    name: build-tauri · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Deps de sistema de Tauri en Linux (WebKitGTK 4.1, appindicator, rsvg…).
+      # En Windows no hacen falta.
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/gui-tauri/package-lock.json
+
+      - name: Setup Rust (stable)
+        uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
+        with:
+          toolchain: stable
+
+      # Cachea ~/.cargo y el target del crate de Tauri (que es su propio
+      # workspace, independiente del de la raíz).
+      - name: Cache Cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/gui-tauri/src-tauri -> target
+
+      - name: Frontend · npm ci
+        working-directory: apps/gui-tauri
+        run: npm ci
+
+      - name: Frontend · build (tsc + vite)
+        working-directory: apps/gui-tauri
+        run: npm run build
+
+      # Solo el crate de Tauri: `cargo check --workspace` no lo vería, porque
+      # está excluido del workspace de la raíz.
+      - name: Backend · cargo check
+        working-directory: apps/gui-tauri/src-tauri
+        env:
+          CARGO_BUILD_WARNINGS: deny
+        run: cargo check
+
+      - name: Backend · cargo test
+        working-directory: apps/gui-tauri/src-tauri
+        env:
+          CARGO_BUILD_WARNINGS: deny
+        run: cargo test

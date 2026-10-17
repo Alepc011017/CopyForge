@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import logoUrl from "../../../icon/CopyForge.svg";
 import "./App.css";
 
 type Tab = "lista" | "errores" | "opciones";
@@ -30,6 +31,14 @@ const DEFAULT_OPTIONS: GuiOptions = {
   exclude: "",
   durability: "File",
 };
+
+const PANEL_LABELS: Record<Tab, string> = {
+  lista: "Lista de copia",
+  errores: "Informe de errores",
+  opciones: "Opciones",
+};
+
+const PANELS: Tab[] = ["lista", "errores", "opciones"];
 
 // --- Datos de la maqueta (en P4.3 los provee el motor real) ---------------
 const SRC_LABEL = "C:\\Descargas";
@@ -66,8 +75,10 @@ const DUMMY_ROWS: CopyRow[] = [
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("lista");
+  const [menuOpen, setMenuOpen] = useState(false);
   const [options, setOptions] = useState<GuiOptions>(DEFAULT_OPTIONS);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   // Al montar: pide las opciones al backend (defaults del motor en P4.2).
   useEffect(() => {
@@ -78,6 +89,23 @@ export default function App() {
       })
       .catch((e) => setStatusMsg(`Error al cargar opciones: ${String(e)}`));
   }, []);
+
+  // Cierra el menú al pulsar fuera o con Escape.
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onPointerDown(e: MouseEvent) {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [menuOpen]);
 
   // Actualiza el estado local y lo empuja al backend.
   function applyOptions(patch: Partial<GuiOptions>) {
@@ -90,50 +118,49 @@ export default function App() {
 
   return (
     <div className="tf-window">
-      {/* Rutas de origen/destino: solo lectura (las proveerá el motor en P4.3) */}
-      <div className="tf-paths">
-        <div className="tf-path">
-          <span className="tf-path-label">Desde:</span>
-          <span className="tf-path-value" title={SRC_LABEL}>
-            {SRC_LABEL}
-          </span>
+      {/* Cabecera: icono 64x64 + rutas de origen/destino (solo lectura) */}
+      <header className="tf-header">
+        <img className="tf-logo" src={logoUrl} alt="CopyForge" width={64} height={64} />
+        <div className="tf-paths">
+          <div className="tf-path">
+            <span className="tf-path-label">Origen:</span>
+            <span className="tf-path-value" title={SRC_LABEL}>
+              {SRC_LABEL}
+            </span>
+          </div>
+          <div className="tf-path">
+            <span className="tf-path-label">Destino:</span>
+            <span className="tf-path-value" title={DST_LABEL}>
+              {DST_LABEL}
+            </span>
+          </div>
         </div>
-        <div className="tf-path">
-          <span className="tf-path-label">Hacia:</span>
-          <span className="tf-path-value" title={DST_LABEL}>
-            {DST_LABEL}
-          </span>
-        </div>
-      </div>
+      </header>
 
-      {/* Progreso: global + fichero en curso */}
+      {/* Progreso: global (gruesa) + fichero en curso (fina) */}
       <div className="tf-progress">
-        <div className="tf-progress-row">
-          <span className="tf-percent">{GLOBAL_PERCENT}%</span>
-          <div className="tf-progress-track tf-track-global">
-            <div
-              className="tf-progress-fill tf-fill-global"
-              style={{ width: `${GLOBAL_PERCENT}%` }}
-            />
-          </div>
-          <span className="tf-progress-total">{GLOBAL_BYTES}</span>
+        <div className="tf-bar tf-bar-global">
+          <div
+            className="tf-bar-fill tf-bar-fill-global"
+            style={{ width: `${GLOBAL_PERCENT}%` }}
+          />
+          <span className="tf-bar-text tf-bar-text-global">
+            {GLOBAL_PERCENT}% · {GLOBAL_BYTES}
+          </span>
         </div>
 
-        <div className="tf-progress-row">
-          <span className="tf-percent-file">{FILE_PERCENT}%</span>
-          <div className="tf-progress-track tf-track-file">
-            <div
-              className="tf-progress-fill tf-fill-file"
-              style={{ width: `${FILE_PERCENT}%` }}
-            />
-          </div>
-          <span className="tf-current" title={CURRENT_FILE}>
-            {CURRENT_FILE}
+        <div className="tf-bar tf-bar-file">
+          <div
+            className="tf-bar-fill tf-bar-fill-file"
+            style={{ width: `${FILE_PERCENT}%` }}
+          />
+          <span className="tf-bar-text">
+            {CURRENT_FILE} · {FILE_PERCENT}%
           </span>
         </div>
       </div>
 
-      {/* Acciones (maqueta, sin funcionalidad hasta P4.4) */}
+      {/* Controles (maqueta, sin funcionalidad hasta P4.4) */}
       <div className="tf-actions">
         <button className="tf-btn tf-action">Pausa</button>
         <button className="tf-btn tf-action">Pasar</button>
@@ -146,28 +173,46 @@ export default function App() {
         {statusMsg && <span className="tf-status-error"> ⚠ {statusMsg}</span>}
       </div>
 
-      {/* Pestañas */}
-      <div className="tf-tabs">
+      {/* Menú desplegable de paneles */}
+      <div className="tf-menu" ref={menuRef}>
         <button
-          className={tab === "lista" ? "tf-btn tf-tab tf-tab-active" : "tf-btn tf-tab"}
-          onClick={() => setTab("lista")}
+          className="tf-btn tf-menu-btn"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          onClick={() => setMenuOpen((open) => !open)}
         >
-          Lista de copia
+          <span className="tf-menu-icon" aria-hidden="true">
+            ☰
+          </span>
+          {PANEL_LABELS[tab]}
+          <span className="tf-menu-caret" aria-hidden="true">
+            ▼
+          </span>
         </button>
-        <button
-          className={tab === "errores" ? "tf-btn tf-tab tf-tab-active" : "tf-btn tf-tab"}
-          onClick={() => setTab("errores")}
-        >
-          Informe de errores
-        </button>
-        <button
-          className={tab === "opciones" ? "tf-btn tf-tab tf-tab-active" : "tf-btn tf-tab"}
-          onClick={() => setTab("opciones")}
-        >
-          Opciones
-        </button>
+
+        {menuOpen && (
+          <div className="tf-menu-list" role="menu">
+            {PANELS.map((p) => (
+              <button
+                key={p}
+                role="menuitem"
+                className={
+                  p === tab ? "tf-menu-item tf-menu-item-active" : "tf-menu-item"
+                }
+                onClick={() => {
+                  setTab(p);
+                  setMenuOpen(false);
+                }}
+              >
+                {PANEL_LABELS[p]}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
-      <div className="tf-tabpanel">
+
+      {/* Panel activo */}
+      <div className="tf-panel">
         {tab === "lista" && (
           <table className="tf-table">
             <thead>
@@ -188,7 +233,9 @@ export default function App() {
             </tbody>
           </table>
         )}
+
         {tab === "errores" && <div className="tf-empty">Sin errores.</div>}
+
         {tab === "opciones" && (
           <div className="tf-options">
             <label className="tf-check">
@@ -201,6 +248,7 @@ export default function App() {
               />
               Preserve metadata
             </label>
+
             <label className="tf-optrow">
               <span className="tf-optlabel">Overwrite:</span>
               <select
@@ -213,6 +261,7 @@ export default function App() {
                 <option>Always</option>
               </select>
             </label>
+
             <label className="tf-optrow">
               <span className="tf-optlabel">Verify:</span>
               <select
@@ -224,6 +273,7 @@ export default function App() {
                 <option>Hash</option>
               </select>
             </label>
+
             <label className="tf-optrow">
               <span className="tf-optlabel">Jobs:</span>
               <input
@@ -239,6 +289,7 @@ export default function App() {
                 }
               />
             </label>
+
             <label className="tf-optrow">
               <span className="tf-optlabel">Exclude:</span>
               <input
@@ -249,6 +300,7 @@ export default function App() {
                 onChange={(e) => applyOptions({ exclude: e.target.value })}
               />
             </label>
+
             <label className="tf-optrow">
               <span className="tf-optlabel">Durability:</span>
               <select

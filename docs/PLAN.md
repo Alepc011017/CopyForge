@@ -171,13 +171,22 @@ el mismo motor Rust.
     backend). `exclude` (una línea) → `exclusion: Vec<String>`.
   - Frontend: interfaz TS, `get_options` al montar (error visible en la barra de
     estado) y `set_options` en cada cambio de control de la pestaña Opciones.
-  - UI de monitorización (no formulario): Origen/Destino como texto de solo
-    lectura (sin inputs ni diálogos de carpeta), dos barras de progreso (global
-    con % y bytes; por fichero con % y nombre), acciones a la derecha, barra de
-    estado y pestañas (Opciones alberga los controles de `GuiOptions`).
-  - CSS reescrito (sin `#ece9d8`/Tahoma/outset): fondo `#f3f3f3`, bordes
+  - UI de monitorización (no formulario): cabecera con el icono 64x64
+    (`icon/CopyForge.svg`) y Origen/Destino como texto de solo lectura (sin
+    inputs ni diálogos de carpeta); dos barras de progreso con el texto dentro
+    (global 40px con % y bytes; por fichero 28px con nombre y %); acciones a la
+    derecha; barra de estado; y un menú desplegable (☰) con Lista de copia /
+    Informe de errores / Opciones (aquí viven los controles de `GuiOptions`).
+  - CSS reescrito (sin `#ece9d8`/Tahoma/outset): fondo `#f3f4f6`, bordes
     `#d1d5db` con radio 6px, progreso azul `#2563eb` (global) y verde `#10b981`
-    (fichero en curso), transiciones suaves.
+    (fichero en curso), transiciones de anchura/color.
+  - `vite.config.ts` autoriza (`server.fs.allow`) la raíz del repo para poder
+    importar el icono, que vive fuera de `apps/gui-tauri`.
+  - CI propio en `.github/workflows/tauri-ci.yml` (push/PR a `feature/gui-tauri`
+    y `main`): el `ci.yml` no compila la GUI porque está fuera del workspace;
+    este workflow hace `npm ci` + `npm run build` y `cargo check` +
+    `cargo test` sobre `apps/gui-tauri/src-tauri`, con deps de sistema de Tauri
+    en Linux y caché de Cargo/target (`Swatinem/rust-cache`).
   - 5 tests en el crate de Tauri (mapeo a defaults de core, parseo de `exclude`,
     round-trip, formato wire del payload de React).
 - **P4.3** ⏳ Pendiente — Conectar `CopyEngine` (spawn de copia + eventos `CopyEvent` →

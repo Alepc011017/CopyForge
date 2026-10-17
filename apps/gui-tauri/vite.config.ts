@@ -17,6 +17,11 @@ export default defineConfig(() => ({
     port: 1420,
     strictPort: true,
     host: host || false,
+    // El icono de la app vive en `icon/CopyForge.svg` (raíz del repo), fuera de
+    // `apps/gui-tauri`: hay que autorizar ese directorio para el dev server.
+    fs: {
+      allow: ["..", "../.."],
+    },
     hmr: host
       ? {
           protocol: "ws",
