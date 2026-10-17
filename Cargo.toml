@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/core", "apps/cli", "apps/gui"]
-exclude = ["apps/gui-iced"]
+exclude = ["apps/gui-iced", "apps/gui-tauri/src-tauri"]
 resolver = "2"
 
 [workspace.package]

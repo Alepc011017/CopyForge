@@ -115,37 +115,64 @@
   - Seguimiento: el flag `TEMPORARY` viaja con el rename al `dst`; si `Full` en Windows quiere quitarlo, hacerlo con `SetFileAttributesW` sobre el `dst`, no vía `keep()`.
   - Estado: ✅ Hecho.
 
-## P4 — Migración de la GUI de egui a Iced
+## P4 — Migración de la GUI de egui a Tauri 2
 
-Fase nueva. Decisión de producto: reescribir apps/gui con Iced para obtener una UI
-más moderna, con arquitectura Elm-like (State/Message/update/view) más mantenible que
-el immediate-mode de egui. El motor (crates/core) no se toca en ninguna parte de esta fase.
+Fase nueva. Decisión de producto: reescribir `apps/gui` con **Tauri 2** (backend Rust +
+frontend React/TypeScript), en lugar de Iced. El motor (`crates/core`) no se toca en
+ninguna parte de esta fase.
 
-Contexto: P2.2a dejó GuiOptions encapsulando todo el estado editable de la GUI, lo que
-convierte la migración en un mapeo casi 1:1 (GuiOptions → State, controles → Message).
-El riesgo principal es que Iced está etiquetado como "experimental" en 0.x y su API
-cambia entre versiones menores; mitigación: fijar la versión en Cargo.toml (iced = "0.14")
-y no actualizar sin revisar el CHANGELOG.
+Contexto: P2.2a dejó `GuiOptions` encapsulando todo el estado editable de la GUI, lo que
+convierte la migración en un mapeo casi 1:1 (`GuiOptions` → `State` de React, controles →
+`Message`/setters). Se evaluaron dos alternativas con prototipos reales (Iced y Tauri 2).
 
-- **P4.0** ✅ Hecho — Prototipo mínimo de Iced aislado del workspace (`d924f82`, con API real 0.14: `Task`, `application(boot, update, view)`, sin `Command`).
-  - **Origen**: decisión de migrar la GUI (evaluación entre Iced, Tauri 2 y GTK-rs).
-  - **Objetivo**: validar que Iced compila y renderiza correctamente en el sistema del
-    desarrollador antes de comprometerse con la migración completa.
-  - **Alcance**:
-    - Rama feature/gui-iced.
-    - Crate nuevo "iced-proto" fuera del workspace principal (aislado).
-    - Ventana con título "CopyForge Proto".
-    - Un checkbox (Toggler) "Preserve metadata".
-    - Un pick_list para overwrite con 4 opciones (Never, IfNewer, IfDifferent, Always).
-    - Un botón "Simular copia" que actualice un texto con el estado actual.
-    - iced = "0.14" fijado en Cargo.toml.
-  - **Archivos afectados**: ninguno del workspace actual (crate aislado en rama nueva).
-  - **Criterio de éxito**: el proto compila, arranca en Linux, y al pulsar el botón el
-    texto refleja el estado de las opciones. Captura de pantalla o salida de cargo run.
+**Decisión (final)**: Tauri 2. Iced se descarta porque la UI de TeraCopy (pestañas, tabla
+de progreso, modales, densidad estilo Windows clásico) exige construir widgets de alto
+nivel a mano; con HTML/CSS esa misma densidad cuesta mucho menos. El backend sigue siendo
+el mismo motor Rust.
+
+### Prototipo Iced — abandonado
+
+- **P4.0** ❌ Abandonado — Prototipo mínimo de Iced aislado del workspace.
+- **P4.1** ❌ Abandonado — Migrar `GuiOptions` → `State` de Iced.
+- **P4.2** ❌ Abandonado — Migrar controles → `Message` + `update`.
+  - **Nota**: Prototipo Iced validado (commits `d924f82`, `6eaf243`) pero descartado por
+    la fricción de construir pestañas/tablas/modales a mano.
+  - `apps/gui-iced` se conserva **congelado** en la rama `feature/gui-iced` como referencia.
+
+### Migración Tauri 2 — activa
+
+- **P4.0** ✅ Hecho — Prototipo Tauri 2 aislado, validado (`tauri dev` + `tauri build` OK).
+  - **Ubicación original**: `/home/alejandro-pc/tauri-proto-copyforge` (fuera del repo).
+  - **Stack**: React 19 + TypeScript + Vite; `identifier: com.copyforge.proto`.
+  - **Maqueta TeraCopy-like**: filas Desde/Hacia con diálogos nativos
+    (`@tauri-apps/plugin-dialog` + `tauri-plugin-dialog`), barra de progreso 64%,
+    nombre del fichero en curso, botones Pausa/Pasar/Cancelar, barra de estado
+    `1 / 4 · Total: 202.78 MB` y 3 pestañas (Lista de copia / Informe de errores /
+    Opciones) que cambian el contenido mostrado.
+  - **Validación**: ventana 800x600; diálogos rellenan el input; pestañas intercambian
+    contenido; `tauri build` produce `.deb`, `.rpm` y `.AppImage`.
   - **Bloqueantes**: ninguno.
+- **P4.1** 🔄 En curso — Integración en `apps/gui-tauri` (este paso).
+  - Se copia el prototipo al repo (sin `node_modules`/`target`/`dist`) y se aísla del
+    workspace (`exclude = [..., "apps/gui-tauri/src-tauri"]`) para que
+    `cargo check --workspace` no compile Tauri ni arrastre sus deps gráficas.
+  - `copyforge-core` queda declarado por path en el `Cargo.toml` de Tauri (aún sin uso).
+- **P4.2** ⏳ Pendiente — Conectar `GuiOptions`/`State` de React con comandos Tauri
+  (`#[tauri::command]`) para leer/escribir opciones.
+- **P4.3** ⏳ Pendiente — Conectar `CopyEngine` (spawn de copia + eventos `CopyEvent` →
+  Tauri events → React).
+- **P4.4** ⏳ Pendiente — Cancelación/Pausa reales.
+- **P4.5** ⏳ Pendiente — Deprecar `apps/gui` (egui) y `apps/gui-iced`.
 
-- **P4.1** ✅ Hecho — Migrar GuiOptions → State de Iced (`6eaf243`, 6 tests; `GuiOptions` nuevo porque egui no lo exponía).
-- **P4.2** 🔄 En curso — Migrar controles → Message + update.
-- **P4.3** ⏳ Pendiente — Conectar CopyEngine + cancelación.
-- **P4.4** ⏳ Pendiente — Migrar render de progreso y reporte final.
-- **P4.5** ⏳ Pendiente — Deprecar apps/gui (egui) y promover apps/gui-iced.
+### Nota de entorno (Linux local)
+
+Compilar Tauri falla con `libpng >= 1.4.0 could not be satisfied` en `pango-sys` porque
+`/usr/local/lib/pkgconfig/libpng.pc` apunta a libpng12 (1.2.59) y ensombrece el del sistema
+(1.6.57). Workaround no invasivo (no requiere tocar ficheros del sistema), solo para el
+comando:
+
+```sh
+PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig npm run tauri dev   # o tauri build
+```
+
+En una máquina limpia (y en Windows) no hace falta.

@@ -1,0 +1,162 @@
+/* Maqueta estilo Windows clásico: denso, bordes outset/inset,
+   tipografía del sistema. Nada de minimalismo moderno. */
+
+.tf-window {
+  background: #ece9d8;
+  color: #000;
+  font: 12px Tahoma, "Segoe UI", system-ui, sans-serif;
+  padding: 8px;
+  min-height: 100vh;
+  box-sizing: border-box;
+}
+
+.tf-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.tf-label {
+  width: 52px;
+  flex: none;
+}
+
+.tf-input {
+  flex: 1;
+  border: 2px inset #fff;
+  background: #fff;
+  padding: 2px 4px;
+  font: inherit;
+  min-width: 0;
+}
+
+.tf-btn {
+  border: 2px outset #fff;
+  background: #ece9d8;
+  padding: 2px 10px;
+  font: inherit;
+  white-space: nowrap;
+}
+
+.tf-btn:active {
+  border-style: inset;
+}
+
+.tf-progress-zone {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 2px;
+}
+
+.tf-percent {
+  font-size: 32px;
+  font-weight: bold;
+  min-width: 96px;
+}
+
+.tf-progress-track {
+  flex: 1;
+  height: 18px;
+  border: 2px inset #fff;
+  background: #fff;
+}
+
+.tf-progress-fill {
+  height: 100%;
+  background: #22b14c;
+}
+
+.tf-current {
+  margin: 2px 0 8px 112px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tf-actions {
+  margin: 6px 0;
+}
+
+.tf-action {
+  min-width: 90px;
+}
+
+.tf-statusbar {
+  border-top: 1px solid #808080;
+  padding: 3px 2px;
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+
+.tf-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 0;
+}
+
+.tf-tab-active {
+  border-style: inset;
+  font-weight: bold;
+}
+
+.tf-tabpanel {
+  border: 2px inset #fff;
+  background: #fff;
+  min-height: 150px;
+  padding: 4px;
+}
+
+.tf-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.tf-table th {
+  background: #ece9d8;
+  border: 1px outset #fff;
+  padding: 2px 6px;
+  text-align: left;
+  font-weight: normal;
+}
+
+.tf-table td {
+  border-bottom: 1px dotted #c0c0c0;
+  padding: 2px 6px;
+}
+
+.tf-empty {
+  padding: 12px;
+  color: #444;
+}
+
+.tf-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+}
+
+.tf-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tf-optrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tf-optrow select,
+.tf-optrow .tf-input {
+  flex: 1;
+}
+
+.tf-jobs {
+  max-width: 70px;
+  flex: none;
+}
