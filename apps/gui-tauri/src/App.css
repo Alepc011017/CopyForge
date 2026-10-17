@@ -90,6 +90,11 @@
   margin-bottom: 6px;
 }
 
+.tf-status-error {
+  color: #a00000;
+  font-weight: bold;
+}
+
 .tf-tabs {
   display: flex;
   gap: 2px;

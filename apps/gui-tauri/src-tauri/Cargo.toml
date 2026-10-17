@@ -23,8 +23,11 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-dialog = "2.8.3"
-# Motor de copia de CopyForge. Declarada ya para P4.2 (comandos Tauri);
-# aún sin uso en código en este paso.
+# Logs del backend (P4.2). `tracing` para el macro, `tracing-subscriber` para
+# que la salida sea visible en la consola de `tauri dev`.
+tracing = "0.1"
+tracing-subscriber = "0.3"
+# Motor de copia de CopyForge (mapeo GuiOptions → CopyOptions en P4.2).
 copyforge-core = { path = "../../../crates/core" }
 
 

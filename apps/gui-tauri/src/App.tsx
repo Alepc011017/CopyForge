@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 
@@ -9,6 +10,27 @@ interface CopyRow {
   estado: string;
   destino: string;
 }
+
+// Espejo del DTO `GuiOptions` de Rust (src-tauri/src/lib.rs). Campos en
+// snake_case para coincidir 1:1 con el serde del backend.
+interface GuiOptions {
+  preserve_metadata: boolean;
+  overwrite: string;
+  verify: string;
+  jobs: number;
+  exclude: string;
+  durability: string;
+}
+
+// Valor inicial mientras responde `get_options` (coincide con el default Rust).
+const DEFAULT_OPTIONS: GuiOptions = {
+  preserve_metadata: true,
+  overwrite: "Always",
+  verify: "Size",
+  jobs: 4,
+  exclude: "",
+  durability: "File",
+};
 
 // Tabla dummy: 4 ficheros, el 2º en curso (coherente con "1 / 4" y el 64%).
 const DUMMY_ROWS: CopyRow[] = [
@@ -43,13 +65,27 @@ export default function App() {
   const [origen, setOrigen] = useState("");
   const [destino, setDestino] = useState("");
   const [tab, setTab] = useState<Tab>("lista");
-  // Opciones (espejo de GuiOptions, solo estado local).
-  const [preserve, setPreserve] = useState(true);
-  const [overwrite, setOverwrite] = useState("Always");
-  const [verify, setVerify] = useState("Size");
-  const [jobs, setJobs] = useState(4);
-  const [exclude, setExclude] = useState("");
-  const [durability, setDurability] = useState("File");
+  const [options, setOptions] = useState<GuiOptions>(DEFAULT_OPTIONS);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
+  // Al montar: pide las opciones al backend (defaults del motor en P4.2).
+  useEffect(() => {
+    invoke<GuiOptions>("get_options")
+      .then((opts) => {
+        setOptions(opts);
+        setStatusMsg(null);
+      })
+      .catch((e) => setStatusMsg(`Error al cargar opciones: ${String(e)}`));
+  }, []);
+
+  // Actualiza el estado local y lo empuja al backend.
+  function applyOptions(patch: Partial<GuiOptions>) {
+    const next = { ...options, ...patch };
+    setOptions(next);
+    invoke("set_options", { options: next }).catch((e) =>
+      setStatusMsg(`Error al guardar opciones: ${String(e)}`),
+    );
+  }
 
   return (
     <div className="tf-window">
@@ -99,7 +135,10 @@ export default function App() {
       </div>
 
       {/* d) Barra de estado */}
-      <div className="tf-statusbar">1 / 4 · Total: 202.78 MB</div>
+      <div className="tf-statusbar">
+        1 / 4 · Total: 202.78 MB
+        {statusMsg && <span className="tf-status-error"> ⚠ {statusMsg}</span>}
+      </div>
 
       {/* e) Pestañas */}
       <div className="tf-tabs">
@@ -143,22 +182,25 @@ export default function App() {
             </tbody>
           </table>
         )}
-        {tab === "errores" && (
-          <div className="tf-empty">Sin errores.</div>
-        )}
+        {tab === "errores" && <div className="tf-empty">Sin errores.</div>}
         {tab === "opciones" && (
           <div className="tf-options">
             <label className="tf-check">
               <input
                 type="checkbox"
-                checked={preserve}
-                onChange={(e) => setPreserve(e.target.checked)}
+                checked={options.preserve_metadata}
+                onChange={(e) =>
+                  applyOptions({ preserve_metadata: e.target.checked })
+                }
               />
               Preserve metadata
             </label>
             <label className="tf-optrow">
               Overwrite:
-              <select value={overwrite} onChange={(e) => setOverwrite(e.target.value)}>
+              <select
+                value={options.overwrite}
+                onChange={(e) => applyOptions({ overwrite: e.target.value })}
+              >
                 <option>Never</option>
                 <option>IfNewer</option>
                 <option>IfDifferent</option>
@@ -167,7 +209,10 @@ export default function App() {
             </label>
             <label className="tf-optrow">
               Verify:
-              <select value={verify} onChange={(e) => setVerify(e.target.value)}>
+              <select
+                value={options.verify}
+                onChange={(e) => applyOptions({ verify: e.target.value })}
+              >
                 <option>None</option>
                 <option>Size</option>
                 <option>Hash</option>
@@ -180,8 +225,12 @@ export default function App() {
                 type="number"
                 min={1}
                 max={16}
-                value={jobs}
-                onChange={(e) => setJobs(Number(e.target.value) || 1)}
+                value={options.jobs}
+                onChange={(e) =>
+                  applyOptions({
+                    jobs: Math.min(16, Math.max(1, Number(e.target.value) || 1)),
+                  })
+                }
               />
             </label>
             <label className="tf-optrow">
@@ -190,13 +239,16 @@ export default function App() {
                 className="tf-input"
                 type="text"
                 placeholder="*.log, target/**…"
-                value={exclude}
-                onChange={(e) => setExclude(e.target.value)}
+                value={options.exclude}
+                onChange={(e) => applyOptions({ exclude: e.target.value })}
               />
             </label>
             <label className="tf-optrow">
               Durability:
-              <select value={durability} onChange={(e) => setDurability(e.target.value)}>
+              <select
+                value={options.durability}
+                onChange={(e) => applyOptions({ durability: e.target.value })}
+              >
                 <option>None</option>
                 <option>File</option>
                 <option>Full</option>
