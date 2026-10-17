@@ -83,12 +83,37 @@ body,
   user-select: text;
 }
 
-/* --- Barras de progreso (texto centrado dentro) ------------------------- */
-.tf-progress {
+/* --- Cuerpo en dos columnas --------------------------------------------- */
+.tf-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: start;
+  flex: 1;
+}
+
+.tf-col-left {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-bottom: 14px;
+  min-width: 0;
+}
+
+.tf-file-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Zona derecha: Pausa/Pasar apilados y, a su derecha, la barra de disco
+   justo encima de Cancelar. */
+.tf-col-right {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(2, 34px);
+  grid-auto-columns: 104px;
+  gap: 8px;
 }
 
 .tf-bar {
@@ -106,6 +131,8 @@ body,
 }
 
 .tf-bar-file {
+  flex: 1;
+  min-width: 0;
   height: 28px;
 }
 
@@ -146,12 +173,35 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
-/* --- Controles ---------------------------------------------------------- */
-.tf-actions {
+/* --- Barra de disco ----------------------------------------------------- */
+.tf-disk {
   display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-bottom: 12px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tf-disk-label {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tf-disk-track {
+  height: 8px;
+  background: var(--border-soft);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.tf-disk-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #3b82f6 0%, #ef4444 100%);
+  transition: width 0.25s ease;
 }
 
 .tf-btn {
@@ -182,15 +232,14 @@ body,
 }
 
 .tf-action {
-  min-width: 92px;
   font-weight: 500;
 }
 
 /* --- Barra de estado ---------------------------------------------------- */
 .tf-statusbar {
   border-top: 1px solid var(--border-soft);
+  margin-top: 14px;
   padding: 6px 2px;
-  margin-bottom: 10px;
   font-size: 12px;
   color: var(--text-muted);
 }
@@ -205,80 +254,91 @@ body,
   font-weight: 600;
 }
 
-/* --- Menú desplegable de paneles ---------------------------------------- */
-.tf-menu {
-  position: relative;
-  align-self: flex-start;
-  margin-bottom: 8px;
+/* --- Desplegable anclado al extremo derecho de la barra de archivo ------ */
+.tf-dropdown {
+  flex: none;
 }
 
-.tf-menu-btn {
+.tf-dropdown-btn {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 12px;
+  padding: 4px 10px;
   font-weight: 500;
 }
 
-.tf-menu-icon {
+.tf-dropdown-icon {
   font-size: 14px;
   line-height: 1;
 }
 
-.tf-menu-caret {
+.tf-dropdown-caret {
   font-size: 8px;
   color: var(--text-muted);
 }
 
-.tf-menu-list {
+/* El panel toma el ancho de la fila: su borde derecho es el de la barra de
+   archivo y nunca se sale de la ventana. */
+.tf-dropdown-panel {
   position: absolute;
-  top: calc(100% + 4px);
+  top: calc(100% + 6px);
+  right: 0;
   left: 0;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  min-width: 200px;
-  padding: 4px;
+  z-index: 30;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.14);
 }
 
-.tf-menu-item {
+/* --- Pestañas estilo navegador (dentro del desplegable) ----------------- */
+.tf-tabs {
+  display: flex;
+  gap: 4px;
+  align-items: flex-end;
+  padding: 6px 6px 0;
+  background: #f9fafb;
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.tf-tab {
   font: inherit;
-  text-align: left;
-  color: var(--text);
-  background: transparent;
-  border: 0;
-  border-radius: 4px;
-  padding: 6px 10px;
-  cursor: pointer;
-}
-
-.tf-menu-item:hover {
+  color: var(--text-muted);
   background: var(--hover);
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: var(--radius) var(--radius) 0 0;
+  padding: 5px 14px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
 }
 
-.tf-menu-item-active {
-  color: var(--accent);
+.tf-tab:hover {
+  color: var(--text);
+}
+
+.tf-tab-active {
+  margin-bottom: -1px;
+  padding-bottom: 6px;
+  color: var(--text);
+  background: var(--surface);
+  border-bottom: 1px solid var(--surface);
   font-weight: 600;
 }
 
-/* --- Panel -------------------------------------------------------------- */
-.tf-panel {
-  flex: 1;
-  min-height: 120px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+.tf-tabpanel {
+  max-height: 320px;
   padding: 8px;
+  background: var(--surface);
+  border-radius: 0 0 var(--radius) var(--radius);
   overflow: auto;
 }
 
 .tf-table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
   font-size: 12.5px;
 }
 
@@ -293,8 +353,11 @@ body,
 }
 
 .tf-table td {
+  overflow: hidden;
   border-bottom: 1px solid #f1f2f4;
   padding: 6px 10px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .tf-empty {
