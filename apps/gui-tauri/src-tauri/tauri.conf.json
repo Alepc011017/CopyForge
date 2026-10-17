@@ -14,9 +14,11 @@
       {
         "title": "CopyForge",
         "width": 800,
-        "height": 600,
+        "height": 350,
         "minWidth": 560,
         "minHeight": 240,
+        "resizable": false,
+        "transparent": true,
         "decorations": false
       }
     ],

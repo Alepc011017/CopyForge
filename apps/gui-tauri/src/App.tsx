@@ -74,38 +74,44 @@ const GLOBAL_PERCENT = 64;
 const GLOBAL_BYTES = "202.78 MB";
 const FILE_PERCENT = 86;
 const CURRENT_FILE = "SitioWebTVCesp.7z";
-const COMPLETED = "1 / 4 archivos completados";
+const FILE_PROGRESS = "1 / 4"; // dummy: en P4.3 vendrá del motor
 const DISK_LABEL = "Disco Local (D:)";
 const DISK_USAGE = 68; // dummy: en P4.3 vendrá del motor
 
-// Panel de detalles y ventana: el panel va en el flujo (justo debajo de la barra
-// de archivo), así que la ventana crece lo que ocupa el panel + esta separación.
+// Ventana: el tamaño base es compacto (coincide con `tauri.conf.json`) y al
+// abrir el panel de detalles la ventana crece hacia abajo lo que ocupa el panel
+// más esta separación.
+const BASE_WINDOW_WIDTH = 800; // px lógicos
+const BASE_WINDOW_HEIGHT = 350; // px lógicos
 const PANEL_GAP = 6; // px lógicos (coincide con el `margin-top` del panel en CSS)
 const MIN_WINDOW_HEIGHT = 240; // px lógicos: la ventana no baja de aquí
 
-// Tabla dummy: 4 ficheros, el 2º en curso (coherente con las barras).
-const DUMMY_ROWS: CopyRow[] = [
-  {
-    fuente: "C:\\Descargas\\Manual.pdf",
-    estado: "Completado",
-    destino: "D:\\Backup\\Manual.pdf",
-  },
-  {
-    fuente: "C:\\Descargas\\SitioWebTVCesp.7z",
-    estado: "86%",
-    destino: "D:\\Backup\\SitioWebTVCesp.7z",
-  },
-  {
-    fuente: "C:\\Descargas\\Fotos.zip",
-    estado: "En cola",
-    destino: "D:\\Backup\\Fotos.zip",
-  },
-  {
-    fuente: "C:\\Descargas\\Notas.txt",
-    estado: "En cola",
-    destino: "D:\\Backup\\Notas.txt",
-  },
+// Tabla dummy: 16 ficheros, el 1º completado y el 2º en curso (coherente con las
+// barras). En P4.3 las filas las provee el motor.
+const DUMMY_FILES = [
+  "Manual.pdf",
+  "SitioWebTVCesp.7z",
+  "Fotos.zip",
+  "Notas.txt",
+  "Presupuesto2026.xlsx",
+  "Planos_v3.dwg",
+  "Capturas.zip",
+  "Musica.7z",
+  "Informe_final.docx",
+  "Logo.svg",
+  "Videos_webm.7z",
+  "BaseDatos.sql",
+  "Plantilla.pptx",
+  "Certificados.p12",
+  "Backup_old.zip",
+  "README.md",
 ];
+
+const DUMMY_ROWS: CopyRow[] = DUMMY_FILES.map((name, i) => ({
+  fuente: `C:\\Descargas\\${name}`,
+  estado: i === 0 ? "Completado" : i === 1 ? `${FILE_PERCENT}%` : "En cola",
+  destino: `D:\\Backup\\${name}`,
+}));
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("lista");
@@ -116,16 +122,9 @@ export default function App() {
   const [maximized, setMaximized] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  // Altura (px lógicos) que el panel abierto añade a la ventana; al cerrarlo hay
-  // que restar exactamente lo que se sumó.
+  // Altura (px lógicos) que el panel abierto añade a la ventana; sirve para no
+  // redimensionar cuando el panel ya estaba cerrado.
   const panelDeltaRef = useRef(0);
-  // Altura de la ventana con el panel cerrado (px físicos). El compositor aplica
-  // los cambios de tamaño de forma asíncrona, así que recalcularla desde la
-  // altura "actual" en cada toggle provoca derivas: se fija una base y solo la
-  // redefine un redimensionado manual del usuario.
-  const baseHeightRef = useRef<number | null>(null);
-  const resizingRef = useRef(false);
-  const menuOpenRef = useRef(false);
 
   // Al montar: pide las opciones al backend (defaults del motor en P4.2).
   useEffect(() => {
@@ -197,7 +196,7 @@ export default function App() {
     };
   }, []);
 
-  // Estado de maximizado (para el botón) y altura base de la ventana colapsada.
+  // Estado de maximizado, para que el botón de la barra de título lo refleje.
   useEffect(() => {
     if (!hasBackend()) return;
     const win = getCurrentWindow();
@@ -205,14 +204,6 @@ export default function App() {
     let disposed = false;
     const sync = () => {
       void win.isMaximized().then(setMaximized).catch(() => {});
-      // Con el panel cerrado, un redimensionado manual redefine la base.
-      if (menuOpenRef.current || resizingRef.current) return;
-      void win
-        .innerSize()
-        .then((size) => {
-          baseHeightRef.current = size.height;
-        })
-        .catch(() => {});
     };
     sync();
     void win
@@ -229,9 +220,9 @@ export default function App() {
   }, []);
 
   // La ventana crece (o se encoge) con el panel de detalles, que va en el flujo:
-  // el objetivo se calcula sobre la altura base, no sobre la altura actual.
+  // el objetivo es siempre una altura absoluta sobre la base compacta (la ventana
+  // no se redimensiona a mano, así que la base no cambia).
   useEffect(() => {
-    menuOpenRef.current = menuOpen;
     if (!hasBackend()) return;
     const panel = panelRef.current;
     const expanding = menuOpen && panel !== null;
@@ -245,20 +236,24 @@ export default function App() {
     panelDeltaRef.current = expanding ? deltaCss : 0;
 
     const win = getCurrentWindow();
-    resizingRef.current = true;
     void (async () => {
       try {
         const scale = await win.scaleFactor();
-        const inner = await win.innerSize();
-        const base = baseHeightRef.current ?? inner.height;
-        baseHeightRef.current = base;
+        const base = Math.round(BASE_WINDOW_HEIGHT * scale);
         const pixels = Math.round(deltaCss * scale);
         const height = Math.max(
           Math.round(MIN_WINDOW_HEIGHT * scale),
           expanding ? base + pixels : base,
         );
+        const inner = await win.innerSize();
+        // Maximizada y con sitio de sobra no se toca: redimensionarla la
+        // restauraría. Si está maximizada pero el contenido no cabe, sí se
+        // ajusta (evita quedarse atascada por un estado maximizado obsoleto).
+        if ((await win.isMaximized()) && inner.height >= height) return;
         try {
-          await win.setSize(new PhysicalSize(inner.width, height));
+          await win.setSize(
+            new PhysicalSize(Math.round(BASE_WINDOW_WIDTH * scale), height),
+          );
         } catch (e) {
           // Bug conocido de Tauri 2: con `decorations: false` el `setSize` del
           // webview puede no surtir efecto; en ese caso lo hace el backend.
@@ -273,12 +268,6 @@ export default function App() {
           text: `No se pudo redimensionar la ventana: ${String(e)}`,
           level: "warn",
         });
-      } finally {
-        // Margen para que el evento `onResized` de esta operación no redefina la
-        // base con un valor intermedio.
-        window.setTimeout(() => {
-          resizingRef.current = false;
-        }, 300);
       }
     })();
   }, [menuOpen, tab]);
@@ -370,6 +359,10 @@ export default function App() {
               {DST_LABEL}
             </span>
           </div>
+          <div className="tf-path">
+            <span className="tf-path-label">Fichero:</span>
+            <span className="tf-path-value">{FILE_PROGRESS}</span>
+          </div>
         </div>
       </header>
 
@@ -438,24 +431,26 @@ export default function App() {
 
                 <div className="tf-tabpanel">
                   {tab === "lista" && (
-                    <table className="tf-table">
-                      <thead>
-                        <tr>
-                          <th>Fuente</th>
-                          <th>Estado</th>
-                          <th>Destino</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {DUMMY_ROWS.map((r) => (
-                          <tr key={r.fuente}>
-                            <td>{r.fuente}</td>
-                            <td>{r.estado}</td>
-                            <td>{r.destino}</td>
+                    <div className="tf-table-wrap">
+                      <table className="tf-table">
+                        <thead>
+                          <tr>
+                            <th>Fuente</th>
+                            <th>Estado</th>
+                            <th>Destino</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {DUMMY_ROWS.map((r) => (
+                            <tr key={r.fuente}>
+                              <td>{r.fuente}</td>
+                              <td>{r.estado}</td>
+                              <td>{r.destino}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
 
                   {tab === "errores" && (
@@ -561,20 +556,18 @@ export default function App() {
         </section>
       </div>
 
-      {/* Barra de estado */}
-      <div className="tf-statusbar">
-        {COMPLETED}
-        {statusMsg && (
+      {/* Barra de estado: solo se muestra cuando hay algo que avisar */}
+      {statusMsg && (
+        <div className="tf-statusbar">
           <span
             className={
               statusMsg.level === "warn" ? "tf-status-warn" : "tf-status-error"
             }
           >
-            {" "}
             ⚠ {statusMsg.text}
           </span>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
