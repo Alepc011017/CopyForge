@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    tauri_proto_copyforge_lib::run()
+    copyforge_gui_tauri_lib::run()
 }

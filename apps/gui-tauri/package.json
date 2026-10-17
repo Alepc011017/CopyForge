@@ -1,5 +1,5 @@
 {
-  "name": "tauri-proto-copyforge",
+  "name": "copyforge-gui-tauri",
   "private": true,
   "version": "0.1.0",
   "type": "module",

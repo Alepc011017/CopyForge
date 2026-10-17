@@ -152,11 +152,17 @@ el mismo motor Rust.
   - **Validación**: ventana 800x600; diálogos rellenan el input; pestañas intercambian
     contenido; `tauri build` produce `.deb`, `.rpm` y `.AppImage`.
   - **Bloqueantes**: ninguno.
-- **P4.1** 🔄 En curso — Integración en `apps/gui-tauri` (este paso).
+- **P4.1** ✅ Hecho — Integración en `apps/gui-tauri` (`3d870be`).
   - Se copia el prototipo al repo (sin `node_modules`/`target`/`dist`) y se aísla del
     workspace (`exclude = [..., "apps/gui-tauri/src-tauri"]`) para que
     `cargo check --workspace` no compile Tauri ni arrastre sus deps gráficas.
   - `copyforge-core` queda declarado por path en el `Cargo.toml` de Tauri (aún sin uso).
+- **P4.1-fix** ✅ Hecho — Renombrado a `copyforge-gui-tauri` y README actualizado.
+  - `package.json` + `src-tauri/Cargo.toml` → `copyforge-gui-tauri` (lib
+    `copyforge_gui_tauri_lib`); `tauri.conf.json` → `productName: "CopyForge"`,
+    `identifier: com.copyforge.app`.
+  - `README.md` reescrito: sin referencias al prototipo antiguo ni a su ruta; documenta
+    arranque, aislamiento del workspace y el workaround de `libpng`.
 - **P4.2** ⏳ Pendiente — Conectar `GuiOptions`/`State` de React con comandos Tauri
   (`#[tauri::command]`) para leer/escribir opciones.
 - **P4.3** ⏳ Pendiente — Conectar `CopyEngine` (spawn de copia + eventos `CopyEvent` →
@@ -172,6 +178,7 @@ Compilar Tauri falla con `libpng >= 1.4.0 could not be satisfied` en `pango-sys`
 comando:
 
 ```sh
+cd apps/gui-tauri
 PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig npm run tauri dev   # o tauri build
 ```
 
