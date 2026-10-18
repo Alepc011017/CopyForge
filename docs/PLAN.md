@@ -201,6 +201,49 @@ el mismo motor Rust.
     round-trip, formato wire del payload de React, alturas de ventana).
 - **P4.3** 🔄 En curso — Conectar `CopyEngine` (spawn de copia + eventos `CopyEvent` →
   Tauri events → React).
+- **P4.3-fix** ✅ Hecho — `8df8896` — `Finished` completo en el DTO.
+  - `CopyEventDto::Finished` añade `errors_truncated: usize` (P0.7) y
+    `symlinks_fallback: Vec<(String, String)>` (P1.6). El enum pasa a
+    `Serialize + Deserialize` para el test de round-trip. El mapeo usa
+    `report.symlinks_fallback.iter().map(|(src, dst)| (path_str(src), path_str(dst)))`
+    (tipo confirmado: `Vec<(PathBuf, PathBuf)>`, subconjunto de
+    `files_copied + dirs_created`, no categoría disjunta).
+  - Frontend: el payload `finished` declara los dos campos; el aviso muestra
+    “N errores adicionales omitidos (total: M)” solo si `errors_truncated > 0`.
+    `symlinks_fallback` viaja en el contrato pero su render puede esperar.
+  - Tests: `finished_dto_keeps_every_report_field` (un `Report` con todos los
+    campos no-default ⇒ el DTO no pierde ninguno; detector limitado a los campos
+    listados) y `finished_dto_round_trips_through_json` (`type":"finished"` +
+    campos snake_case).
+  - Verificación: `CARGO_BUILD_WARNINGS=deny cargo test --no-run && cargo test`
+    dentro de `apps/gui-tauri/src-tauri` (el crate está excluido del workspace,
+    la puerta de la raíz no lo cubre) + `npm run build`.
+
+- **P4.3-fix2** ✅ Hecho — `<hash-fix2>` — Arranque único, liberación del token
+  y `copy-cancelled`.
+  - `CopyState.cancel` pasa a `Arc<Mutex<Option<CancellationToken>>>` y
+    `CopyState` a `#[derive(Clone, Default)]`. Motivo: el guard `ReleaseToken`
+    vive dentro de un `tokio::spawn` (exige `'static`) y `State<'_, T>` no es
+    `Clone` en Tauri 2.
+  - `start_copy` rechaza un segundo arranque con
+    `Err("ya hay una copia en curso")` mientras haya token en el slot. El token
+    se libera vía `ReleaseToken::drop` **después** de que el reenviador drene el
+    canal (`oneshot`), evitando un `Finished` obsoleto sobre una copia nueva.
+  - `cancel_copy` añade `app: tauri::AppHandle`, clona el `CancellationToken`
+    dentro del lock y hace `cancel()` + `emit("copy-cancelled", ())` fuera (no
+    se emite con el `MutexGuard` tomado). El frontend resetea `cancelledRef` en
+    `startCopy` (tras el guard de backend/running) y consume el flag en el caso
+    `finished`, mostrando el texto de cancelado.
+  - Verificación manual (sin unit test viable, requiere `AppHandle`/`State`):
+    dos `start_copy` seguidos ⇒ el segundo devuelve `Err`; Cancelar a mitad ⇒
+    `copy-cancelled` + `finished` con texto de cancelado; tercer `start_copy`
+    tras terminar funciona sin arrastrar el flag. `npm run build` OK.
+  - Nota: `ReleaseToken` libera el slot ante un panic del motor, pero el perfil
+    release usa `panic = "abort"`, así que solo protege en debug. Ventana de
+    drenado (t0→t3, ~µs): `cancel_copy` ahí es un no-op y un `start_copy`
+    recibe “ya hay una copia en curso” (reintento OK). Un cuelgue del reenviador
+    dejaría el slot ocupado (mismo comportamiento que sin guard; el `break` del
+    loop cubre el caso normal).
 - **P4.4** ⏳ Pendiente — Cancelación/Pausa reales.
 - **P4.5** ⏳ Pendiente — Deprecar `apps/gui` (egui) y `apps/gui-iced`.
 

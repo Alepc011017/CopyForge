@@ -184,7 +184,7 @@ fn path_str(path: &Path) -> String {
 /// toca, así que se mapea aquí, igual que `GuiOptions` con `CopyOptions`. El
 /// discriminador va en la clave `type` (`planned`, `fileStarted`, `progress`, …)
 /// para que el frontend haga `switch` sobre él.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum CopyEventDto {
     Planned { total_files: usize, total_bytes: u64 },
@@ -204,6 +204,8 @@ pub enum CopyEventDto {
         symlinks_created: u64,
         duration_ms: u64,
         errors: Vec<String>,
+        errors_truncated: usize,
+        symlinks_fallback: Vec<(String, String)>,
     },
 }
 
@@ -252,6 +254,12 @@ impl From<CopyEvent> for CopyEventDto {
                     .errors
                     .iter()
                     .map(|(path, error)| format!("{}: {error}", path_str(path)))
+                    .collect(),
+                errors_truncated: report.errors_truncated,
+                symlinks_fallback: report
+                    .symlinks_fallback
+                    .iter()
+                    .map(|(src, dst)| (path_str(src), path_str(dst)))
                     .collect(),
             },
         }
@@ -425,6 +433,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use copyforge_core::Report;
+    use std::path::PathBuf;
+    use std::time::Duration;
 
     #[test]
     fn default_gui_options_maps_to_core_defaults() {
@@ -476,6 +487,57 @@ mod tests {
         assert!(json.contains("\"Always\""), "json: {json}");
         assert!(json.contains("\"Size\""), "json: {json}");
         assert!(json.contains("\"File\""), "json: {json}");
+    }
+
+    #[test]
+    fn finished_dto_keeps_every_report_field() {
+        // Un Report con todos los campos no-default: el DTO no debe perder ninguno.
+        let mut report = Report::default();
+        report.files_copied = 3;
+        report.files_skipped = 1;
+        report.files_failed = 2;
+        report.bytes_copied = 7;
+        report.dirs_created = 4;
+        report.symlinks_created = 5;
+        report.duration = Duration::from_millis(1234);
+        report.errors.push((PathBuf::from("/x/boom.txt"), "e".into()));
+        report.errors_truncated = 998;
+        report.symlinks_fallback.push((PathBuf::from("/a"), PathBuf::from("/b")));
+
+        let CopyEventDto::Finished {
+            errors_truncated,
+            symlinks_fallback,
+            files_failed,
+            duration_ms,
+            ..
+        } = CopyEventDto::from(CopyEvent::Finished { report })
+        else {
+            panic!("esperaba Finished");
+        };
+
+        assert_eq!(errors_truncated, 998);
+        assert_eq!(symlinks_fallback, vec![("/a".to_string(), "/b".to_string())]);
+        assert_eq!(files_failed, 2);
+        assert_eq!(duration_ms, 1234);
+    }
+
+    #[test]
+    fn finished_dto_round_trips_through_json() {
+        // El frontend discrimina por `type` y lee campos en snake_case.
+        let mut report = Report::default();
+        report.files_copied = 1;
+        report.errors_truncated = 4;
+        report.symlinks_fallback.push((PathBuf::from("/s"), PathBuf::from("/d")));
+
+        let dto = CopyEventDto::from(CopyEvent::Finished { report });
+        let json = serde_json::to_string(&dto).expect("serializa");
+        assert!(json.contains("\"type\":\"finished\""), "json: {json}");
+        assert!(json.contains("\"errors_truncated\":4"), "json: {json}");
+        let back: CopyEventDto = serde_json::from_str(&json).expect("deserializa");
+        let CopyEventDto::Finished { errors_truncated, .. } = back else {
+            panic!("esperaba Finished");
+        };
+        assert_eq!(errors_truncated, 4);
     }
 
     #[test]

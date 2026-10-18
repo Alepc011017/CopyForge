@@ -82,6 +82,8 @@ type CopyEventPayload =
       symlinks_created: number;
       duration_ms: number;
       errors: string[];
+      errors_truncated: number;
+      symlinks_fallback: [string, string][];
     };
 
 // Progreso de la copia real. Mientras es `null` la UI muestra los valores de la
@@ -504,10 +506,16 @@ export default function App() {
         );
         const errores =
           ev.files_failed > 0 ? `, ${ev.files_failed} con errores` : "";
+        const omitidos =
+          ev.errors_truncated > 0
+            ? `, ${ev.errors_truncated} errores adicionales omitidos (total: ${
+                ev.errors.length + ev.errors_truncated
+              })`
+            : "";
         setStatusMsg({
           text: `Copia terminada: ${ev.files_copied} ficheros, ${formatBytes(
             ev.bytes_copied_total,
-          )} en ${(ev.duration_ms / 1000).toFixed(1)} s${errores}`,
+          )} en ${(ev.duration_ms / 1000).toFixed(1)} s${errores}${omitidos}`,
           level: "warn",
         });
         break;
