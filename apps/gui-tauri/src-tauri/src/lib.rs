@@ -1,15 +1,29 @@
-//! Backend Tauri de CopyForge (P4.2).
+//! Backend Tauri de CopyForge (P4.2 + P4.3).
 //!
-//! Expone las opciones de copia al frontend mediante los comandos
-//! `get_options` / `set_options`. Los tipos de `copyforge_core` no implementan
-//! `Serialize`/`Deserialize` (y el motor no se toca en esta fase), así que
-//! [`GuiOptions`] actúa de DTO en la frontera y se mapea a `CopyOptions`.
+//! Expone al frontend:
+//! - `get_options` / `set_options`: [`GuiOptions`] actúa de DTO en la frontera con
+//!   `copyforge_core::CopyOptions` (los tipos del motor no tienen serde y
+//!   `crates/core` no se toca).
+//! - `adjust_window_size`: fallback del redimensionado desde Rust.
+//! - `start_copy` / `cancel_copy`: arranque y cancelación de una copia real con
+//!   `copyforge_core::CopyEngine`, retransmitiendo sus `CopyEvent` al frontend
+//!   como eventos `copy-event` ([`CopyEventDto`]).
 //!
-//! En P4.3 `set_options` alimentará el arranque de la copia; de momento solo
-//! registra lo recibido con `tracing::info!`.
+//! Diseño: la GUI monitoriza una cola de tareas (la pestaña «Lista de copia»),
+//! no una ventana por copia; por eso el estado de la copia en curso vive en
+//! [`CopyState`] en vez de crear una ventana nueva por operación.
 
-use copyforge_core::{CopyOptions, DurabilityPolicy, OverwritePolicy, VerifyPolicy};
+use std::path::Path;
+use std::sync::Mutex;
+
+use copyforge_core::{
+    build_plan, CopyEngine, CopyEvent, CopyOptions, DurabilityPolicy, OverwritePolicy,
+    VerifyPolicy,
+};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+use tauri::{Emitter, State};
 
 /// DTO de frontera con el frontend (React).
 ///
@@ -158,6 +172,92 @@ impl Default for GuiOptions {
     }
 }
 
+/// Ruta en texto (lossy: las rutas de Windows/Unix que no son UTF-8 no son
+/// representables; la UI no las necesita ver en crudo).
+fn path_str(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+/// Versión serializable de `copyforge_core::CopyEvent` para la frontera con React.
+///
+/// `CopyEvent` (y su `Report`) no implementan `Serialize` y `crates/core` no se
+/// toca, así que se mapea aquí, igual que `GuiOptions` con `CopyOptions`. El
+/// discriminador va en la clave `type` (`planned`, `fileStarted`, `progress`, …)
+/// para que el frontend haga `switch` sobre él.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum CopyEventDto {
+    Planned { total_files: usize, total_bytes: u64 },
+    FileStarted { path: String, size: u64 },
+    Progress { path: String, bytes_copied: u64, total: u64 },
+    FileCompleted { path: String, elapsed_ms: u64 },
+    FileSkipped { path: String, reason: String },
+    FileFailed { path: String, error: String },
+    Symlinked { src: String, dst: String },
+    SymlinkFallback { path: String, target: String, reason: String },
+    Finished {
+        files_copied: u64,
+        files_skipped: u64,
+        files_failed: u64,
+        bytes_copied_total: u64,
+        dirs_created: u64,
+        symlinks_created: u64,
+        duration_ms: u64,
+        errors: Vec<String>,
+    },
+}
+
+impl From<CopyEvent> for CopyEventDto {
+    fn from(event: CopyEvent) -> Self {
+        match event {
+            CopyEvent::Planned { total_files, total_bytes } => {
+                Self::Planned { total_files, total_bytes }
+            }
+            CopyEvent::FileStarted { path, size } => {
+                Self::FileStarted { path: path_str(&path), size }
+            }
+            CopyEvent::Progress { path, bytes_copied, total } => Self::Progress {
+                path: path_str(&path),
+                bytes_copied,
+                total,
+            },
+            CopyEvent::FileCompleted { path, elapsed } => Self::FileCompleted {
+                path: path_str(&path),
+                elapsed_ms: elapsed.as_millis() as u64,
+            },
+            CopyEvent::FileSkipped { path, reason } => Self::FileSkipped {
+                path: path_str(&path),
+                reason: format!("{reason:?}"),
+            },
+            CopyEvent::FileFailed { path, error } => {
+                Self::FileFailed { path: path_str(&path), error }
+            }
+            CopyEvent::Symlinked { src, dst } => {
+                Self::Symlinked { src: path_str(&src), dst: path_str(&dst) }
+            }
+            CopyEvent::SymlinkFallback { path, target, reason } => Self::SymlinkFallback {
+                path: path_str(&path),
+                target: path_str(&target),
+                reason,
+            },
+            CopyEvent::Finished { report } => Self::Finished {
+                files_copied: report.files_copied,
+                files_skipped: report.files_skipped,
+                files_failed: report.files_failed,
+                bytes_copied_total: report.bytes_copied,
+                dirs_created: report.dirs_created,
+                symlinks_created: report.symlinks_created,
+                duration_ms: report.duration.as_millis() as u64,
+                errors: report
+                    .errors
+                    .iter()
+                    .map(|(path, error)| format!("{}: {error}", path_str(path)))
+                    .collect(),
+            },
+        }
+    }
+}
+
 /// Devuelve las opciones actuales (defaults del motor en P4.2).
 #[tauri::command]
 fn get_options() -> GuiOptions {
@@ -171,6 +271,85 @@ fn get_options() -> GuiOptions {
 fn set_options(options: GuiOptions) {
     let mapped: CopyOptions = options.into();
     tracing::info!(?mapped, "set_options");
+}
+
+/// Estado de la copia en curso (P4.3).
+///
+/// El motor crea su propio `CancellationToken` al instanciarse; aquí se guarda
+/// un clon para que `cancel_copy` pueda frenar la ejecución. `cancel_copy` es
+/// síncrono, de ahí el `Mutex`: se toma y se suelta sin cruzar ningún `await`.
+#[derive(Default)]
+struct CopyState {
+    cancel: Mutex<Option<CancellationToken>>,
+}
+
+/// Lanza una copia real con el motor de `copyforge_core`.
+///
+/// Se valida y planifica antes de arrancar, así que un error de rutas (origen
+/// inexistente, destino dentro del origen, …) vuelve como error del comando en
+/// vez de perderse en los eventos. El motor corre en una tarea aparte y sus
+/// `CopyEvent` se reenvían al frontend por el canal `copy-event`.
+#[tauri::command]
+async fn start_copy(
+    app: tauri::AppHandle,
+    state: State<'_, CopyState>,
+    src: String,
+    dst: String,
+    options: GuiOptions,
+) -> Result<(), String> {
+    let src_path = std::path::PathBuf::from(&src);
+    let dst_path = std::path::PathBuf::from(&dst);
+    let core_options: CopyOptions = options.into();
+
+    let plan = build_plan(&src_path, &dst_path, &core_options).map_err(|e| e.to_string())?;
+    tracing::info!(
+        src = %src,
+        dst = %dst,
+        tasks = plan.tasks.len(),
+        total_bytes = plan.total_bytes,
+        "start_copy"
+    );
+
+    let (tx, mut rx) = mpsc::channel::<CopyEvent>(256);
+    let engine = CopyEngine::new(core_options, tx);
+
+    // Se sustituye el token anterior: la UI no deja arrancar dos copias a la vez
+    // y, tras terminar o cancelar, el token viejo ya no aporta nada.
+    {
+        let mut slot = state.cancel.lock().map_err(|e| e.to_string())?;
+        *slot = Some(engine.cancel_token());
+    }
+
+    tokio::spawn(async move {
+        let report = engine.run(plan).await;
+        tracing::info!(?report, "start_copy terminado");
+    });
+
+    // Reenvía los eventos al frontend hasta que el motor cierre el canal.
+    tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            if let Err(e) = app.emit("copy-event", CopyEventDto::from(event)) {
+                tracing::warn!("no se pudo emitir `copy-event`: {e}");
+                break;
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Cancela la copia en curso. Pausa/Saltar llegan en P4.4.
+#[tauri::command]
+fn cancel_copy(state: State<'_, CopyState>) -> Result<(), String> {
+    let guard = state.cancel.lock().map_err(|e| e.to_string())?;
+    match guard.as_ref() {
+        Some(token) => {
+            token.cancel();
+            tracing::info!("cancel_copy: token de cancelación disparado");
+            Ok(())
+        }
+        None => Err("no hay ninguna copia en curso".to_string()),
+    }
 }
 
 /// Altura mínima lógica de la ventana (coincide con la base de `tauri.conf.json`
@@ -234,8 +413,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_options,
             set_options,
-            adjust_window_size
+            adjust_window_size,
+            start_copy,
+            cancel_copy
         ])
+        .manage(CopyState::default())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

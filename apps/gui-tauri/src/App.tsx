@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   getCurrentWindow,
   PhysicalSize,
@@ -57,6 +58,66 @@ const DEFAULT_OPTIONS: GuiOptions = {
   exclude: "",
   durability: "File",
 };
+
+// Espejo del `CopyEventDto` que emite el backend en `copy-event` (src-tauri/src/lib.rs):
+// un enum serializado con `#[serde(tag = "type")]`, así que el discriminador llega
+// como `type` (`planned`, `fileStarted`, …) y los campos en snake_case, igual que
+// `GuiOptions`: la frontera se mapea 1:1 con el serde de Rust.
+type CopyEventPayload =
+  | { type: "planned"; total_files: number; total_bytes: number }
+  | { type: "fileStarted"; path: string; size: number }
+  | { type: "progress"; path: string; bytes_copied: number; total: number }
+  | { type: "fileCompleted"; path: string; elapsed_ms: number }
+  | { type: "fileSkipped"; path: string; reason: string }
+  | { type: "fileFailed"; path: string; error: string }
+  | { type: "symlinked"; src: string; dst: string }
+  | { type: "symlinkFallback"; path: string; target: string; reason: string }
+  | {
+      type: "finished";
+      files_copied: number;
+      files_skipped: number;
+      files_failed: number;
+      bytes_copied_total: number;
+      dirs_created: number;
+      symlinks_created: number;
+      duration_ms: number;
+      errors: string[];
+    };
+
+// Progreso de la copia real. Mientras es `null` la UI muestra los valores de la
+// maqueta (barras y contadores dummy).
+interface CopyProgress {
+  running: boolean;
+  finished: boolean;
+  file: string; // nombre del fichero en curso
+  fileBytes: number; // bytes copiados de ese fichero
+  fileTotal: number; // tamaño de ese fichero
+  filePercent: number; // 0..100
+  copiedBytes: number; // bytes totales ya completados
+  totalBytes: number; // bytes del plan
+  globalPercent: number; // 0..100
+  filesDone: number; // ficheros ya resueltos (copiados, saltados o fallados)
+  filesTotal: number; // ficheros del plan
+}
+
+// Nombre base de una ruta (sirve para las rutas Windows y Unix).
+function baseName(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : path;
+}
+
+// Tamaño en bytes con unidades legibles para las barras.
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = n / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`;
+}
 
 const PANEL_LABELS: Record<Tab, string> = {
   lista: "Lista de copia",
@@ -142,6 +203,11 @@ export default function App() {
   const [statusMsg, setStatusMsg] = useState<StatusMsg | null>(null);
   const [diskUsage] = useState(DISK_USAGE); // dummy (P4.2)
   const [maximized, setMaximized] = useState(false);
+  // Rutas de la copia (editables en P4.3 para poder lanzar copias reales; en P4.4
+  // llegan los selectores de carpeta) y progreso real del motor.
+  const [src, setSrc] = useState(SRC_LABEL);
+  const [dst, setDst] = useState(DST_LABEL);
+  const [copyProgress, setCopyProgress] = useState<CopyProgress | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   // Altura (px lógicos) que el panel abierto añade a la ventana; sirve para no
@@ -241,6 +307,31 @@ export default function App() {
     };
   }, []);
 
+  // Progreso real (P4.3): el backend retransmite los `CopyEvent` del motor como
+  // eventos `copy-event`. `listen` devuelve un unlisten que se libera al desmontar.
+  useEffect(() => {
+    if (!hasBackend()) return;
+    let unlisten: UnlistenFn | undefined;
+    let disposed = false;
+    void listen<CopyEventPayload>("copy-event", (event) =>
+      applyCopyEvent(event.payload),
+    )
+      .then((un) => {
+        if (disposed) un();
+        else unlisten = un;
+      })
+      .catch((e) =>
+        setStatusMsg({
+          text: `No se pudo escuchar 'copy-event': ${String(e)}`,
+          level: "error",
+        }),
+      );
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   // Aplica el tamaño de la ventana: ancho base y altura = base + alto del panel
   // (cuando `expanded`). Si está maximizada y ya tiene sitio de sobra no se toca,
   // porque redimensionarla la restauraría; si está maximizada pero el contenido no
@@ -317,6 +408,141 @@ export default function App() {
     );
   }
 
+  // Actualiza la UI a partir de un evento del motor (P4.3). Los porcentajes se
+  // recalculan con los bytes: la global usa `copiedBytes / totalBytes` y la del
+  // fichero `fileBytes / fileTotal`.
+  function applyCopyEvent(ev: CopyEventPayload) {
+    switch (ev.type) {
+      case "planned":
+        setCopyProgress({
+          running: true,
+          finished: false,
+          file: "",
+          fileBytes: 0,
+          fileTotal: 0,
+          filePercent: 0,
+          copiedBytes: 0,
+          totalBytes: ev.total_bytes,
+          globalPercent: 0,
+          filesDone: 0,
+          filesTotal: ev.total_files,
+        });
+        break;
+
+      case "fileStarted":
+        setCopyProgress((p) => ({
+          ...(p ?? {
+            running: true,
+            finished: false,
+            fileBytes: 0,
+            fileTotal: 0,
+            filePercent: 0,
+            copiedBytes: 0,
+            totalBytes: 0,
+            globalPercent: 0,
+            filesDone: 0,
+            filesTotal: 0,
+          }),
+          running: true,
+          file: baseName(ev.path),
+          fileBytes: 0,
+          fileTotal: ev.size,
+          filePercent: 0,
+        }));
+        break;
+
+      case "progress":
+        setCopyProgress((p) => {
+          if (!p) return p;
+          return {
+            ...p,
+            fileBytes: ev.bytes_copied,
+            filePercent: p.fileTotal > 0 ? (ev.bytes_copied / p.fileTotal) * 100 : 0,
+            globalPercent:
+              p.totalBytes > 0 ? (p.copiedBytes / p.totalBytes) * 100 : 0,
+          };
+        });
+        break;
+
+      case "fileCompleted":
+        setCopyProgress((p) => {
+          if (!p) return p;
+          const filesDone = p.filesDone + 1;
+          // El tamaño se aprende en `fileStarted`; aquí solo se acumula.
+          const copiedBytes = p.copiedBytes + p.fileTotal;
+          return {
+            ...p,
+            filesDone,
+            copiedBytes,
+            filePercent: 100,
+            globalPercent:
+              p.totalBytes > 0 ? (copiedBytes / p.totalBytes) * 100 : 0,
+          };
+        });
+        break;
+
+      case "fileSkipped":
+      case "fileFailed":
+        setCopyProgress((p) => (p ? { ...p, filesDone: p.filesDone + 1 } : p));
+        if (ev.type === "fileFailed") {
+          setStatusMsg({ text: `${baseName(ev.path)}: ${ev.error}`, level: "error" });
+        }
+        break;
+
+      case "finished": {
+        setCopyProgress((p) =>
+          p
+            ? {
+                ...p,
+                running: false,
+                finished: true,
+                filePercent: 100,
+                globalPercent: 100,
+                copiedBytes: ev.bytes_copied_total,
+              }
+            : p,
+        );
+        const errores =
+          ev.files_failed > 0 ? `, ${ev.files_failed} con errores` : "";
+        setStatusMsg({
+          text: `Copia terminada: ${ev.files_copied} ficheros, ${formatBytes(
+            ev.bytes_copied_total,
+          )} en ${(ev.duration_ms / 1000).toFixed(1)} s${errores}`,
+          level: "warn",
+        });
+        break;
+      }
+
+      default:
+        break;
+    }
+  }
+
+  // Lanza una copia real (P4.3) con las rutas de la cabecera y las opciones
+  // actuales. El progreso llega después por `copy-event`.
+  function startCopy() {
+    if (!hasBackend() || (copyProgress?.running ?? false)) return;
+    setCopyProgress(null);
+    setStatusMsg(null);
+    invoke("start_copy", { src, dst, options }).catch((e) =>
+      setStatusMsg({
+        text: `No se pudo iniciar la copia: ${String(e)}`,
+        level: "error",
+      }),
+    );
+  }
+
+  // Cancela la copia en curso (P4.3). Pausa/Saltar llegan en P4.4.
+  function cancelCopy() {
+    if (!hasBackend() || !(copyProgress?.running ?? false)) return;
+    invoke("cancel_copy").catch((e) =>
+      setStatusMsg({
+        text: `No se pudo cancelar la copia: ${String(e)}`,
+        level: "error",
+      }),
+    );
+  }
+
   // Actualiza el estado local y lo empuja al backend.
   function applyOptions(patch: Partial<GuiOptions>) {
     const next = { ...options, ...patch };
@@ -330,6 +556,19 @@ export default function App() {
       }),
     );
   }
+
+  // Valores mostrados: los de la maqueta en reposo y los reales del motor en curso.
+  const progress = copyProgress;
+  const running = progress?.running ?? false;
+  const globalPercent = progress
+    ? Math.round(progress.globalPercent)
+    : GLOBAL_PERCENT;
+  const globalText = progress
+    ? `${formatBytes(progress.copiedBytes)} de ${formatBytes(progress.totalBytes)}`
+    : GLOBAL_BYTES;
+  const currentFile =
+    progress && progress.file ? progress.file : CURRENT_FILE;
+  const filePercent = progress ? Math.round(progress.filePercent) : FILE_PERCENT;
 
   return (
     <div className="tf-window">
@@ -370,27 +609,52 @@ export default function App() {
         </div>
       </header>
 
-      {/* Cabecera: icono 64x64 + rutas de origen/destino (solo lectura) */}
+      {/* Cabecera: icono 64x64 + rutas de origen/destino (editables en P4.3 para
+          poder lanzar copias reales; en P4.4 llegan los selectores de carpeta). */}
       <header className="tf-header">
         <img className="tf-logo" src={logoUrl} alt="CopyForge" width={64} height={64} />
         <div className="tf-paths">
           <div className="tf-path">
             <span className="tf-path-label">Origen:</span>
-            <span className="tf-path-value" title={SRC_LABEL}>
-              {SRC_LABEL}
-            </span>
+            <input
+              className="tf-input tf-path-input"
+              value={src}
+              onChange={(e) => setSrc(e.target.value)}
+              aria-label="Origen"
+              spellCheck={false}
+            />
           </div>
           <div className="tf-path">
             <span className="tf-path-label">Destino:</span>
-            <span className="tf-path-value" title={DST_LABEL}>
-              {DST_LABEL}
-            </span>
+            <input
+              className="tf-input tf-path-input"
+              value={dst}
+              onChange={(e) => setDst(e.target.value)}
+              aria-label="Destino"
+              spellCheck={false}
+            />
           </div>
           <div className="tf-path">
             <span className="tf-path-label">Fichero:</span>
-            <span className="tf-path-value">{FILE_PROGRESS}</span>
+            <span className="tf-path-value">
+              {progress
+                ? `${progress.filesDone} / ${progress.filesTotal}`
+                : FILE_PROGRESS}
+            </span>
           </div>
         </div>
+
+        {/* Botón temporal de P4.3: lanza la copia con las rutas de la cabecera.
+            En P4.4 se integra con Pausa/Saltar y los selectores de carpeta. */}
+        <button
+          className="tf-btn tf-action tf-copy-start"
+          type="button"
+          onClick={startCopy}
+          disabled={running}
+          title="Iniciar copia con las rutas de la cabecera"
+        >
+          Iniciar copia
+        </button>
       </header>
 
       {/* Cuerpo: izquierda (progreso + desplegable) / derecha (controles + disco) */}
@@ -399,10 +663,10 @@ export default function App() {
           <div className="tf-bar tf-bar-global">
             <div
               className="tf-bar-fill tf-bar-fill-global"
-              style={{ width: `${GLOBAL_PERCENT}%` }}
+              style={{ width: `${globalPercent}%` }}
             />
             <span className="tf-bar-text tf-bar-text-global">
-              {GLOBAL_PERCENT}% · {GLOBAL_BYTES}
+              {globalPercent}% · {globalText}
             </span>
           </div>
 
@@ -413,10 +677,10 @@ export default function App() {
               <div className="tf-bar tf-bar-file">
                 <div
                   className="tf-bar-fill tf-bar-fill-file"
-                  style={{ width: `${FILE_PERCENT}%` }}
+                  style={{ width: `${filePercent}%` }}
                 />
                 <span className="tf-bar-text">
-                  {CURRENT_FILE} · {FILE_PERCENT}%
+                  {currentFile} · {filePercent}%
                 </span>
               </div>
 
@@ -574,8 +838,23 @@ export default function App() {
         </section>
 
         <section className="tf-col-right">
-          <button className="tf-btn tf-action">Pausa</button>
-          <button className="tf-btn tf-action">Saltar</button>
+          {/* Pausa/Saltar se implementan en P4.4: de momento deshabilitados. */}
+          <button
+            className="tf-btn tf-action"
+            type="button"
+            disabled
+            title="Pausa (P4.4)"
+          >
+            Pausa
+          </button>
+          <button
+            className="tf-btn tf-action"
+            type="button"
+            disabled
+            title="Saltar (P4.4)"
+          >
+            Saltar
+          </button>
 
           <div className="tf-disk">
             <span className="tf-disk-label">{DISK_LABEL}</span>
@@ -584,7 +863,15 @@ export default function App() {
             </div>
           </div>
 
-          <button className="tf-btn tf-action">Cancelar</button>
+          <button
+            className="tf-btn tf-action"
+            type="button"
+            onClick={cancelCopy}
+            disabled={!running}
+            title="Cancelar la copia en curso"
+          >
+            Cancelar
+          </button>
         </section>
       </div>
 

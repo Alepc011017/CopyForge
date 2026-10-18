@@ -163,7 +163,17 @@ el mismo motor Rust.
     `identifier: com.copyforge.app`.
   - `README.md` reescrito: sin referencias al prototipo antiguo ni a su ruta; documenta
     arranque, aislamiento del workspace y el workaround de `libpng`.
-- **P4.2** ✅ Hecho — `GuiOptions` de React ↔ comandos Tauri (`431c40d`) + UI moderna.
+- **P4.2** ✅ Hecho — `GuiOptions` de React ↔ comandos Tauri + UI de monitorización moderna.
+  - Commits de la fase: `431c40d` (get/set_options + estado React), `ad826c3` (UI
+    moderna + CI propio), `ce0f49d` (aviso cuando no hay IPC), `bb83cac` (fix invoke +
+    dos columnas con disco), `285d1dd` (barra de archivo a ancho completo, ventana
+    dinámica, barra de título propia y modo oscuro), `004f5b2` (ventana compacta, icono
+    integrado, `Fichero: n / N` en cabecera y 16 filas con scroll) y `97dc5c3` (textos
+    en español, botón `Saltar` y ventana 800x250).
+  - **Decisión de diseño**: la GUI monitoriza una **cola de tareas** (la pestaña
+    «Lista de copia»), no una ventana por copia. Un único proceso con una ventana
+    compacta que crece al abrir el panel de detalles; el estado de la copia en curso
+    vive en `CopyState` (P4.3), no en ventanas nuevas.
   - Backend: DTO `GuiOptions` (`Serialize`/`Deserialize`) con enums espejo
     (`OverwriteDto`/`VerifyDto`/`DurabilityDto`); `From`/`Into` con `CopyOptions`
     (core no se toca: no tiene serde). Comandos `get_options`/`set_options`, que
@@ -187,9 +197,9 @@ el mismo motor Rust.
     este workflow hace `npm ci` + `npm run build` y `cargo check` +
     `cargo test` sobre `apps/gui-tauri/src-tauri`, con deps de sistema de Tauri
     en Linux y caché de Cargo/target (`Swatinem/rust-cache`).
-  - 5 tests en el crate de Tauri (mapeo a defaults de core, parseo de `exclude`,
-    round-trip, formato wire del payload de React).
-- **P4.3** ⏳ Pendiente — Conectar `CopyEngine` (spawn de copia + eventos `CopyEvent` →
+  - 7 tests en el crate de Tauri (mapeo a defaults de core, parseo de `exclude`,
+    round-trip, formato wire del payload de React, alturas de ventana).
+- **P4.3** 🔄 En curso — Conectar `CopyEngine` (spawn de copia + eventos `CopyEvent` →
   Tauri events → React).
 - **P4.4** ⏳ Pendiente — Cancelación/Pausa reales.
 - **P4.5** ⏳ Pendiente — Deprecar `apps/gui` (egui) y `apps/gui-iced`.
