@@ -201,7 +201,7 @@ el mismo motor Rust.
     round-trip, formato wire del payload de React, alturas de ventana).
 - **P4.3** 🔄 En curso — Conectar `CopyEngine` (spawn de copia + eventos `CopyEvent` →
   Tauri events → React).
-- **P4.3-fix** ✅ Hecho — `8df8896` — `Finished` completo en el DTO.
+- **P4.3-fix** ✅ Hecho — `b1cfeef` — `Finished` completo en el DTO.
   - `CopyEventDto::Finished` añade `errors_truncated: usize` (P0.7) y
     `symlinks_fallback: Vec<(String, String)>` (P1.6). El enum pasa a
     `Serialize + Deserialize` para el test de round-trip. El mapeo usa
