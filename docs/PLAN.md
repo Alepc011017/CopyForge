@@ -275,7 +275,7 @@ el mismo motor Rust.
     Funcionalmente correcto, pero anti-patrón.
   - Verificación: 38 tests de core; smoke en ventana con `COPYFORGE_THROTTLE_US`:
     pausa 5 s ⇒ no arrancan más ficheros; reanudar ⇒ 4 ficheros, 0 fallos.
-- **P4.6a** 🔄 En curso — CLI en la GUI (`<hash-p4.6a>`).
+- **P4.6a** 🔄 En curso — CLI en la GUI (`a6ef65c`).
   - `src/cli.rs`: `LaunchArgs` + `Command::Copy/Move(TransferArgs)` (clap);
     `From<TransferArgs> for GuiOptions`; re-exportado como `LaunchArgs`.
   - `main.rs`: `run(LaunchArgs::parse())`; `run(args)` encola la transferencia inicial en
