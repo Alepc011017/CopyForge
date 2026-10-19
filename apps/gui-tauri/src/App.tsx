@@ -216,6 +216,11 @@ export default function App() {
   // redimensionar cuando el panel ya estaba cerrado.
   const panelDeltaRef = useRef(0);
 
+  // Cancelación (P4.4): `copy-cancelled` marca que el **próximo** `finished` es
+  // de cancelación. Se resetea al arrancar cada copia para que un aviso tardío no
+  // marque la siguiente.
+  const cancelledRef = useRef(false);
+
   // Al montar: pide las opciones al backend (defaults del motor en P4.2).
   useEffect(() => {
     if (!hasBackend()) {
@@ -328,6 +333,27 @@ export default function App() {
           level: "error",
         }),
       );
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // Aviso de cancelación (P4.4): lo emite `cancel_copy` y marca que el próximo
+  // `finished` es de cancelación. Es un flag que se consume (y se resetea) en el
+  // caso "finished" de `applyCopyEvent`.
+  useEffect(() => {
+    if (!hasBackend()) return;
+    let unlisten: UnlistenFn | undefined;
+    let disposed = false;
+    void listen("copy-cancelled", () => {
+      cancelledRef.current = true;
+    })
+      .then((un) => {
+        if (disposed) un();
+        else unlisten = un;
+      })
+      .catch(() => {});
     return () => {
       disposed = true;
       unlisten?.();
@@ -492,6 +518,10 @@ export default function App() {
         break;
 
       case "finished": {
+        // El flag se lee y se resetea aquí: un `copy-cancelled` previo convierte
+        // este `finished` en una cancelación.
+        const fueCancelado = cancelledRef.current;
+        cancelledRef.current = false;
         setCopyProgress((p) =>
           p
             ? {
@@ -512,8 +542,9 @@ export default function App() {
                 ev.errors.length + ev.errors_truncated
               })`
             : "";
+        const marca = fueCancelado ? "Cancelado" : "Copia terminada";
         setStatusMsg({
-          text: `Copia terminada: ${ev.files_copied} ficheros, ${formatBytes(
+          text: `${marca}: ${ev.files_copied} ficheros, ${formatBytes(
             ev.bytes_copied_total,
           )} en ${(ev.duration_ms / 1000).toFixed(1)} s${errores}${omitidos}`,
           level: "warn",
@@ -530,6 +561,8 @@ export default function App() {
   // actuales. El progreso llega después por `copy-event`.
   function startCopy() {
     if (!hasBackend() || (copyProgress?.running ?? false)) return;
+    // Tras el guard: si no se arranca nada, no tocamos el flag.
+    cancelledRef.current = false;
     setCopyProgress(null);
     setStatusMsg(null);
     invoke("start_copy", { src, dst, options }).catch((e) =>

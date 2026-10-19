@@ -14,14 +14,14 @@
 //! [`CopyState`] en vez de crear una ventana nueva por operación.
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use copyforge_core::{
     build_plan, CopyEngine, CopyEvent, CopyOptions, DurabilityPolicy, OverwritePolicy,
     VerifyPolicy,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tauri::{Emitter, State};
 
@@ -286,9 +286,34 @@ fn set_options(options: GuiOptions) {
 /// El motor crea su propio `CancellationToken` al instanciarse; aquí se guarda
 /// un clon para que `cancel_copy` pueda frenar la ejecución. `cancel_copy` es
 /// síncrono, de ahí el `Mutex`: se toma y se suelta sin cruzar ningún `await`.
-#[derive(Default)]
+///
+/// `cancel` es un `Arc` para que la tarea del motor tenga su propio propietario
+/// del token: el guard [`ReleaseToken`] vive dentro de un `tokio::spawn`, que exige
+/// `'static`, y `State<'_, T>` presta por el comando y no es `Clone` en Tauri 2.
+#[derive(Clone, Default)]
 struct CopyState {
-    cancel: Mutex<Option<CancellationToken>>,
+    cancel: Arc<Mutex<Option<CancellationToken>>>,
+}
+
+/// Libera el slot de cancelación al salir de su ámbito.
+///
+/// Vive dentro de la tarea del motor: si `engine.run` paniquea, el unwinding
+/// corre `Drop` y el slot queda libre. Sin él, un panic dejaría `Some` para
+/// siempre y `cancel_copy` y un segundo `start_copy` quedarían bloqueados el resto
+/// de la sesión.
+///
+/// Nota: el perfil release usa `panic = "abort"`, así que el guard solo protege
+/// en debug (y en builds sin abort). Ver PLAN.md.
+struct ReleaseToken {
+    cancel: Arc<Mutex<Option<CancellationToken>>>,
+}
+
+impl Drop for ReleaseToken {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = self.cancel.lock() {
+            *slot = None;
+        }
+    }
 }
 
 /// Lanza una copia real con el motor de `copyforge_core`.
@@ -321,19 +346,18 @@ async fn start_copy(
     let (tx, mut rx) = mpsc::channel::<CopyEvent>(256);
     let engine = CopyEngine::new(core_options, tx);
 
-    // Se sustituye el token anterior: la UI no deja arrancar dos copias a la vez
-    // y, tras terminar o cancelar, el token viejo ya no aporta nada.
+    // (1) Rechazo si ya hay copia en curso: si no, un segundo arranque sustituye
+    //     el token y la primera queda huérfana e in-cancellable.
     {
         let mut slot = state.cancel.lock().map_err(|e| e.to_string())?;
+        if slot.is_some() {
+            return Err("ya hay una copia en curso".to_string());
+        }
         *slot = Some(engine.cancel_token());
     }
 
-    tokio::spawn(async move {
-        let report = engine.run(plan).await;
-        tracing::info!(?report, "start_copy terminado");
-    });
-
-    // Reenvía los eventos al frontend hasta que el motor cierre el canal.
+    // (2) El reenviador avisa cuando ha drenado el canal (incluido `Finished`).
+    let (drained_tx, drained_rx) = oneshot::channel::<()>();
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             if let Err(e) = app.emit("copy-event", CopyEventDto::from(event)) {
@@ -341,19 +365,50 @@ async fn start_copy(
                 break;
             }
         }
+        let _ = drained_tx.send(());
+    });
+
+    // (3) El token se libera SOLO cuando el último evento ha sido emitido. El
+    //     guard vive aquí dentro y libera el slot al terminar el bloque; el
+    //     `Arc` propio satisface el `'static` del spawn.
+    let cancel = state.cancel.clone();
+    tokio::spawn(async move {
+        let _release = ReleaseToken { cancel };
+
+        let report = engine.run(plan).await; // panic ⇒ el guard limpia en el unwinding
+        tracing::info!(?report, "start_copy terminado");
+        // Soltar `events_tx` ANTES de esperar el drenaje: si no, el reenviador
+        // nunca ve el canal cerrado y el spawn se queda esperando un drenaje que
+        // no puede llegar (espera circular).
+        drop(engine);
+
+        // Si el reenviador rompió por error de emit, el oneshot llega cerrado.
+        let _ = drained_rx.await;
     });
 
     Ok(())
 }
 
-/// Cancela la copia en curso. Pausa/Saltar llegan en P4.4.
+/// Cancela la copia en curso (P4.4).
+///
+/// Emite `copy-cancelled` para que el frontend sepa que el **próximo** `finished`
+/// corresponde a esta cancelación (no al anterior). El motor después envía su
+/// `finished` habitual, con los ficheros cancelados contados en `files_failed`.
 #[tauri::command]
-fn cancel_copy(state: State<'_, CopyState>) -> Result<(), String> {
-    let guard = state.cancel.lock().map_err(|e| e.to_string())?;
-    match guard.as_ref() {
+fn cancel_copy(app: tauri::AppHandle, state: State<'_, CopyState>) -> Result<(), String> {
+    // Clonar dentro del lock y operar fuera: no se emite con el guard del Mutex
+    // cogido (emit es lento y otro comando podría quedar bloqueado).
+    let token = {
+        let guard = state.cancel.lock().map_err(|e| e.to_string())?;
+        guard.as_ref().cloned()
+    };
+    match token {
         Some(token) => {
             token.cancel();
             tracing::info!("cancel_copy: token de cancelación disparado");
+            if let Err(e) = app.emit("copy-cancelled", ()) {
+                tracing::warn!("no se pudo emitir `copy-cancelled`: {e}");
+            }
             Ok(())
         }
         None => Err("no hay ninguna copia en curso".to_string()),
