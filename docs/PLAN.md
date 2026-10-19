@@ -260,6 +260,12 @@ el mismo motor Rust.
     P2.1/130.
   - Tests: `pause_blocks_and_resume_copies` (pre-pausado ⇒ sin avance; reanudar ⇒
     `files_copied > 0`) + smoke en ventana con throttle.
+  - Gotcha de desarrollo (React 18/19 StrictMode): en `npm run dev` los efectos de
+    montaje se ejecutan **dos veces** (setup → cleanup → setup). En P4.6b, el efecto
+    de escucha (`listen("copy-request")` + `drain_transfers` + `start_transfer`) se
+    montaría dos veces y el segundo `start_transfer` recibiría `Err("ya hay una copia
+    en curso")`. Fix: guard con ref (`drainedRef.current`) en el efecto de montaje.
+    En producción no aplica; en dev solo ensucia el log. Anotado, sin implementar.
 - **P4.5** ⏳ Pendiente — Deprecar `apps/gui` (egui) y `apps/gui-iced`.
 
 ### Nota de entorno (Linux local)
