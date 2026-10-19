@@ -180,22 +180,6 @@ enum FileResult {
     Failed { path: PathBuf, error: CopyError },
 }
 
-/// Espera `dur` sin `tokio::time` (core no habilita ese feature).
-///
-/// Para esperas de milisegundos cede el scheduler (`yield_now`) para no quemar
-/// CPU; por debajo de 1 ms hace espera activa (`spin_loop`), que da precisión
-/// de microsegundos para el throttle de depuración.
-async fn wait(dur: std::time::Duration) {
-    let t0 = std::time::Instant::now();
-    while t0.elapsed() < dur {
-        if dur > std::time::Duration::from_millis(1) {
-            tokio::task::yield_now().await;
-        } else {
-            std::hint::spin_loop();
-        }
-    }
-}
-
 async fn copy_task(
     task: &CopyTask,
     opts: &CopyOptions,
@@ -210,7 +194,7 @@ async fn copy_task(
 
     // P4.4: pausa entre ficheros. La cancelación sigue funcionando en pausa.
     while paused.load(Ordering::Relaxed) && !cancel.is_cancelled() {
-        wait(std::time::Duration::from_millis(20)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     if cancel.is_cancelled() {
         return FileResult::Failed { path: task.src.clone(), error: CopyError::Cancelled };
@@ -451,7 +435,7 @@ async fn copy_file(
 
         // P4.4: pausa entre chunks (la cancelación se comprueba arriba).
         if paused.load(Ordering::Relaxed) {
-            wait(std::time::Duration::from_millis(20)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             continue;
         }
 
@@ -459,7 +443,7 @@ async fn copy_file(
         // En release `throttle_us` es 0 y esta rama se compila fuera.
         #[cfg(debug_assertions)]
         if throttle_us > 0 {
-            wait(std::time::Duration::from_micros(throttle_us)).await;
+            tokio::time::sleep(std::time::Duration::from_micros(throttle_us)).await;
         }
 
         let n = match src.read(&mut buf).await {
@@ -834,7 +818,7 @@ mod tests {
                     matches!(rx.recv().await, Some(CopyEvent::Planned { .. })),
                     "el engine anuncia el plan antes de pausar"
                 );
-                wait(std::time::Duration::from_millis(200)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 assert!(rx.try_recv().is_err(), "la copia no debe avanzar en pausa");
                 assert!(!dst.exists(), "en pausa no se crea el destino");
                 paused.store(false, Ordering::Relaxed);

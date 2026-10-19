@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-tokio       = { workspace = true, features = ["fs", "io-util", "rt-multi-thread", "macros", "sync"] }
+tokio       = { workspace = true, features = ["fs", "io-util", "rt-multi-thread", "macros", "sync", "time"] }
 tokio-util  = { workspace = true, features = ["rt"] }
 walkdir     = { workspace = true }
 blake3      = { workspace = true }
