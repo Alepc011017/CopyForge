@@ -210,6 +210,8 @@ export default function App() {
   const [src, setSrc] = useState(SRC_LABEL);
   const [dst, setDst] = useState(DST_LABEL);
   const [copyProgress, setCopyProgress] = useState<CopyProgress | null>(null);
+  // Pausa/reanudar (P4.4): el flag vive en `CopyState` y lo mueve `pause_copy`.
+  const [paused, setPaused] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   // Altura (px lógicos) que el panel abierto añade a la ventana; sirve para no
@@ -522,6 +524,9 @@ export default function App() {
         // este `finished` en una cancelación.
         const fueCancelado = cancelledRef.current;
         cancelledRef.current = false;
+        // P4.4 (matices A): al terminar no puede quedar la pausa activa, aunque la
+        // copia se cancelara estando pausada.
+        setPaused(false);
         setCopyProgress((p) =>
           p
             ? {
@@ -579,6 +584,19 @@ export default function App() {
     invoke("cancel_copy").catch((e) =>
       setStatusMsg({
         text: `No se pudo cancelar la copia: ${String(e)}`,
+        level: "error",
+      }),
+    );
+  }
+
+  // Pausa/reanuda la copia (P4.4): el flag vive en `CopyState`.
+  function togglePause() {
+    if (!hasBackend()) return;
+    const next = !paused;
+    setPaused(next);
+    invoke("pause_copy", { paused: next }).catch((e) =>
+      setStatusMsg({
+        text: `No se pudo cambiar la pausa: ${String(e)}`,
         level: "error",
       }),
     );
@@ -879,20 +897,22 @@ export default function App() {
         </section>
 
         <section className="tf-col-right">
-          {/* Pausa/Saltar se implementan en P4.4: de momento deshabilitados. */}
+          {/* Pausa/reanudar (P4.4). Saltar sigue deshabilitado: necesita un handle
+              por tarea que el motor todavía no expone. */}
           <button
             className="tf-btn tf-action"
             type="button"
-            disabled
-            title="Pausa (P4.4)"
+            onClick={togglePause}
+            disabled={!running && !paused}
+            title={paused ? "Reanudar la copia" : "Pausar la copia"}
           >
-            Pausa
+            {paused ? "Reanudar" : "Pausa"}
           </button>
           <button
             className="tf-btn tf-action"
             type="button"
             disabled
-            title="Saltar (P4.4)"
+            title="Saltar (pendiente: requiere handle por tarea)"
           >
             Saltar
           </button>

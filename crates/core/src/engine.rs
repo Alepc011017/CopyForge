@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -20,11 +21,41 @@ pub struct CopyEngine {
     options: CopyOptions,
     events_tx: mpsc::Sender<CopyEvent>,
     cancel: CancellationToken,
+    /// P4.4: pausa/reanudar. Lo comparte `CopyState` (Tauri) vía `with_pause`.
+    paused: Arc<AtomicBool>,
+    /// P4.4: retardo artificial por chunk en debug (`COPYFORGE_THROTTLE_US`);
+    /// 0 en release (la rama del sleep se compila fuera).
+    throttle_us: u64,
 }
 
 impl CopyEngine {
     pub fn new(options: CopyOptions, events_tx: mpsc::Sender<CopyEvent>) -> Self {
-        Self { options, events_tx, cancel: CancellationToken::new() }
+        Self::with_pause(options, events_tx, Arc::new(AtomicBool::new(false)))
+    }
+
+    /// Constructor con el flag de pausa compartido. Lo usa `start_copy` de Tauri:
+    /// el mismo `Arc` vive en `CopyState` y lo consulta `pause_copy`.
+    pub fn with_pause(
+        options: CopyOptions,
+        events_tx: mpsc::Sender<CopyEvent>,
+        paused: Arc<AtomicBool>,
+    ) -> Self {
+        // El throttle solo se lee en debug; en release es 0.
+        #[cfg(debug_assertions)]
+        let throttle_us: u64 = std::env::var("COPYFORGE_THROTTLE_US")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        #[cfg(not(debug_assertions))]
+        let throttle_us: u64 = 0;
+
+        Self {
+            options,
+            events_tx,
+            cancel: CancellationToken::new(),
+            paused,
+            throttle_us,
+        }
     }
 
     pub fn cancel_token(&self) -> CancellationToken { self.cancel.clone() }
@@ -58,6 +89,9 @@ impl CopyEngine {
             let tx = self.events_tx.clone();
             let rtx = res_tx.clone();
             let cancel = self.cancel.clone();
+            // P4.4: la pausa la consulta la propia tarea.
+            let paused = self.paused.clone();
+            let throttle_us = self.throttle_us;
             let sem = sem.clone();
 
             handles.push(tokio::spawn(async move {
@@ -69,7 +103,7 @@ impl CopyEngine {
                     let Ok(_permit) = sem.acquire_owned().await else {
                         return;
                     };
-                    copy_task(&task, &opts, &tx, &cancel).await
+                    copy_task(&task, &opts, &tx, &cancel, &paused, throttle_us).await
                 };
                 let _ = rtx.send(result).await;
             }));
@@ -146,12 +180,38 @@ enum FileResult {
     Failed { path: PathBuf, error: CopyError },
 }
 
+/// Espera `dur` sin `tokio::time` (core no habilita ese feature).
+///
+/// Para esperas de milisegundos cede el scheduler (`yield_now`) para no quemar
+/// CPU; por debajo de 1 ms hace espera activa (`spin_loop`), que da precisión
+/// de microsegundos para el throttle de depuración.
+async fn wait(dur: std::time::Duration) {
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < dur {
+        if dur > std::time::Duration::from_millis(1) {
+            tokio::task::yield_now().await;
+        } else {
+            std::hint::spin_loop();
+        }
+    }
+}
+
 async fn copy_task(
     task: &CopyTask,
     opts: &CopyOptions,
     events: &mpsc::Sender<CopyEvent>,
     cancel: &CancellationToken,
+    paused: &Arc<AtomicBool>,
+    throttle_us: u64,
 ) -> FileResult {
+    if cancel.is_cancelled() {
+        return FileResult::Failed { path: task.src.clone(), error: CopyError::Cancelled };
+    }
+
+    // P4.4: pausa entre ficheros. La cancelación sigue funcionando en pausa.
+    while paused.load(Ordering::Relaxed) && !cancel.is_cancelled() {
+        wait(std::time::Duration::from_millis(20)).await;
+    }
     if cancel.is_cancelled() {
         return FileResult::Failed { path: task.src.clone(), error: CopyError::Cancelled };
     }
@@ -164,8 +224,8 @@ async fn copy_task(
             // Fix 2: no cuenta como archivo
             FileResult::DirCreated
         }
-        TaskKind::Symlink => copy_symlink(task, opts, events, cancel).await,
-        TaskKind::File => copy_file(task, opts, events, cancel).await,
+        TaskKind::Symlink => copy_symlink(task, opts, events, cancel, paused, throttle_us).await,
+        TaskKind::File => copy_file(task, opts, events, cancel, paused, throttle_us).await,
     }
 }
 
@@ -174,13 +234,15 @@ async fn copy_symlink(
     opts: &CopyOptions,
     events: &mpsc::Sender<CopyEvent>,
     cancel: &CancellationToken,
+    paused: &Arc<AtomicBool>,
+    throttle_us: u64,
 ) -> FileResult {
     if cancel.is_cancelled() {
         return FileResult::Failed { path: task.src.clone(), error: CopyError::Cancelled };
     }
 
     if opts.follow_symlinks {
-        return copy_symlink_followed(task, opts, events, cancel).await;
+        return copy_symlink_followed(task, opts, events, cancel, paused, throttle_us).await;
     } else {
         // Recrear el enlace sin seguirlo.
         let link_target = match fs::read_link(&task.src).await {
@@ -226,7 +288,7 @@ async fn copy_symlink(
             if platform::is_privilege_error(&e) {
                 let reason = e.to_string();
                 debug!("symlink sin privilegio, fallback a contenido: {:?} ({reason})", task.src);
-                return match copy_symlink_followed(task, opts, events, cancel).await {
+                return match copy_symlink_followed(task, opts, events, cancel, paused, throttle_us).await {
                     FileResult::Copied { bytes } => FileResult::Fallback {
                         src: task.src.clone(), dst: task.dst.clone(), bytes, is_dir: false, reason,
                     },
@@ -254,6 +316,8 @@ async fn copy_symlink_followed(
     opts: &CopyOptions,
     events: &mpsc::Sender<CopyEvent>,
     cancel: &CancellationToken,
+    paused: &Arc<AtomicBool>,
+    throttle_us: u64,
 ) -> FileResult {
     match fs::metadata(&task.src).await {
         Ok(m) if m.is_dir() => {
@@ -270,7 +334,7 @@ async fn copy_symlink_followed(
                 size: m.len(),
                 kind: TaskKind::File,
             };
-            copy_file(&file_task, opts, events, cancel).await
+            copy_file(&file_task, opts, events, cancel, paused, throttle_us).await
         }
         Ok(_) => {
             debug!("symlink especial omitido: {:?}", task.src);
@@ -297,6 +361,8 @@ async fn copy_file(
     opts: &CopyOptions,
     events: &mpsc::Sender<CopyEvent>,
     cancel: &CancellationToken,
+    paused: &Arc<AtomicBool>,
+    throttle_us: u64,
 ) -> FileResult {
     let start = Instant::now();
 
@@ -381,6 +447,19 @@ async fn copy_file(
             drop(dst);
             // `named` se dropea aquí y limpia el temporal.
             return FileResult::Failed { path: task.src.clone(), error: CopyError::Cancelled };
+        }
+
+        // P4.4: pausa entre chunks (la cancelación se comprueba arriba).
+        if paused.load(Ordering::Relaxed) {
+            wait(std::time::Duration::from_millis(20)).await;
+            continue;
+        }
+
+        // P4.4 (debug): throttle artificial por chunk para el smoke en ventana.
+        // En release `throttle_us` es 0 y esta rama se compila fuera.
+        #[cfg(debug_assertions)]
+        if throttle_us > 0 {
+            wait(std::time::Duration::from_micros(throttle_us)).await;
         }
 
         let n = match src.read(&mut buf).await {
@@ -729,6 +808,39 @@ mod tests {
         assert_eq!(report.files_failed, 5);
         assert_eq!(report.errors.len(), 5);
         assert_eq!(report.errors_truncated, 0);
+    }
+
+    // P4.4: la pausa detiene la copia y reanudar la distingue de una pre-cancelada
+    // (ésta no copia nada; reanudado, `files_copied` es > 0).
+    #[tokio::test]
+    async fn pause_blocks_and_resume_copies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("a.txt");
+        std::fs::write(&src, b"data").unwrap();
+        let dst = tmp.path().join("b.txt");
+        let opts = CopyOptions::default();
+
+        // Empieza pausada: el engine emite `Planned` y se detiene en la puerta.
+        let paused = Arc::new(AtomicBool::new(true));
+        let plan = crate::scanner::build_plan(&src, &dst, &opts).unwrap();
+        let (tx, mut rx) = mpsc::channel(64);
+        let engine = CopyEngine::with_pause(opts, tx, paused.clone());
+
+        // `join!` para observar la pausa mientras el engine corre.
+        let (report, ()) = tokio::join!(
+            engine.run(plan),
+            async {
+                assert!(
+                    matches!(rx.recv().await, Some(CopyEvent::Planned { .. })),
+                    "el engine anuncia el plan antes de pausar"
+                );
+                wait(std::time::Duration::from_millis(200)).await;
+                assert!(rx.try_recv().is_err(), "la copia no debe avanzar en pausa");
+                assert!(!dst.exists(), "en pausa no se crea el destino");
+                paused.store(false, Ordering::Relaxed);
+            },
+        );
+        assert!(report.files_copied > 0, "reanudado, la copia se completa");
     }
 
     #[cfg(unix)]

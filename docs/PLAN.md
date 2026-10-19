@@ -249,7 +249,17 @@ el mismo motor Rust.
     se cierra hasta soltar `events_tx`, la espera era circular y el token nunca
     se liberaba. Regla general: **no retener el productor mientras se espera al
     consumidor** — `drop(engine)` antes de `drained_rx.await`.
-- **P4.4** ⏳ Pendiente — Cancelación/Pausa reales.
+- **P4.4** 🔄 En curso — Pausa/reanudar reales (`<hash-p4.4>`).
+  - Motor: `CopyEngine::with_pause(options, tx, paused)` + flag `Arc<AtomicBool>`
+    consultado en la puerta entre ficheros y en el bucle de `copy_file` (entre
+    chunks); la cancelación sigue funcionando en pausa. `COPYFORGE_THROTTLE_US`
+    (solo `debug_assertions`) da margen para probar la pausa en ventana.
+  - Tauri: `pause_copy(state, paused)`; el flag vive en `CopyState.paused`.
+  - Frontend: botón Pausa ↔ Reanudar; Saltar sigue deshabilitado (requiere un
+    handle por tarea). `cancelled: bool` en `Report` (H-D/A) sigue diferida a
+    P2.1/130.
+  - Tests: `pause_blocks_and_resume_copies` (pre-pausado ⇒ sin avance; reanudar ⇒
+    `files_copied > 0`) + smoke en ventana con throttle.
 - **P4.5** ⏳ Pendiente — Deprecar `apps/gui` (egui) y `apps/gui-iced`.
 
 ### Nota de entorno (Linux local)

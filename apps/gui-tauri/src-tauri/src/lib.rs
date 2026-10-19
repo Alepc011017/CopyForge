@@ -14,6 +14,7 @@
 //! [`CopyState`] en vez de crear una ventana nueva por operación.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use copyforge_core::{
@@ -290,9 +291,27 @@ fn set_options(options: GuiOptions) {
 /// `cancel` es un `Arc` para que la tarea del motor tenga su propio propietario
 /// del token: el guard [`ReleaseToken`] vive dentro de un `tokio::spawn`, que exige
 /// `'static`, y `State<'_, T>` presta por el comando y no es `Clone` en Tauri 2.
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct CopyState {
     cancel: Arc<Mutex<Option<CancellationToken>>>,
+    /// P4.4: flag de pausa/reanudar compartido con el engine (`with_pause`).
+    paused: Mutex<Arc<AtomicBool>>,
+}
+
+// `Mutex` no implementa `Clone`, así que el estado se reconstruye a mano con el
+// mismo `Arc` (sin derivar).
+impl Clone for CopyState {
+    fn clone(&self) -> Self {
+        Self {
+            cancel: self.cancel.clone(),
+            paused: Mutex::new(
+                self.paused
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone(),
+            ),
+        }
+    }
 }
 
 /// Libera el slot de cancelación al salir de su ámbito.
@@ -344,19 +363,33 @@ async fn start_copy(
     );
 
     let (tx, mut rx) = mpsc::channel::<CopyEvent>(256);
-    let engine = CopyEngine::new(core_options, tx);
 
     // (1) Rechazo si ya hay copia en curso: si no, un segundo arranque sustituye
     //     el token y la primera queda huérfana e in-cancellable.
     {
-        let mut slot = state.cancel.lock().map_err(|e| e.to_string())?;
+        let slot = state.cancel.lock().map_err(|e| e.to_string())?;
         if slot.is_some() {
             return Err("ya hay una copia en curso".to_string());
         }
+    }
+
+    // (2) Flag de pausa (P4.4): se crea y se guarda aquí, en la rama de aceptación,
+    //     y se comparte con el engine. `pause_copy` lo consulta desde `CopyState`.
+    let paused = {
+        let mut slot = state.paused.lock().map_err(|e| e.to_string())?;
+        let flag = Arc::new(AtomicBool::new(false));
+        *slot = flag.clone();
+        flag
+    };
+
+    let engine = CopyEngine::with_pause(core_options, tx, paused);
+
+    {
+        let mut slot = state.cancel.lock().map_err(|e| e.to_string())?;
         *slot = Some(engine.cancel_token());
     }
 
-    // (2) El reenviador avisa cuando ha drenado el canal (incluido `Finished`).
+    // (3) El reenviador avisa cuando ha drenado el canal (incluido `Finished`).
     let (drained_tx, drained_rx) = oneshot::channel::<()>();
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
@@ -368,7 +401,7 @@ async fn start_copy(
         let _ = drained_tx.send(());
     });
 
-    // (3) El token se libera SOLO cuando el último evento ha sido emitido. El
+    // (4) El token se libera SOLO cuando el último evento ha sido emitido. El
     //     guard vive aquí dentro y libera el slot al terminar el bloque; el
     //     `Arc` propio satisface el `'static` del spawn.
     let cancel = state.cancel.clone();
@@ -386,6 +419,19 @@ async fn start_copy(
         let _ = drained_rx.await;
     });
 
+    Ok(())
+}
+
+/// Pausa/reanuda la copia en curso (P4.4).
+///
+/// El flag vive en `CopyState.paused` y es el mismo `Arc<AtomicBool>` que consulta
+/// el motor (vía `CopyEngine::with_pause`). Sobre una copia inexistente devuelve
+/// `Err`; comprobar `cancel_copy` en `pause_copy` queda como mejora futura.
+#[tauri::command]
+fn pause_copy(state: State<'_, CopyState>, paused: bool) -> Result<(), String> {
+    let slot = state.paused.lock().map_err(|e| e.to_string())?;
+    slot.store(paused, Ordering::Relaxed);
+    tracing::info!("pause_copy paused={paused}");
     Ok(())
 }
 
@@ -478,7 +524,8 @@ pub fn run() {
             set_options,
             adjust_window_size,
             start_copy,
-            cancel_copy
+            cancel_copy,
+            pause_copy
         ])
         .manage(CopyState::default())
         .run(tauri::generate_context!())
