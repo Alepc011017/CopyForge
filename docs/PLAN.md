@@ -244,6 +244,11 @@ el mismo motor Rust.
     recibe “ya hay una copia en curso” (reintento OK). Un cuelgue del reenviador
     dejaría el slot ocupado (mismo comportamiento que sin guard; el `break` del
     loop cubre el caso normal).
+  - **Pitfall (deadlock de drenado)**: el spawn del motor retenía `engine` (y su
+    `events_tx`) mientras esperaba al consumidor (`drained_rx`); como el canal no
+    se cierra hasta soltar `events_tx`, la espera era circular y el token nunca
+    se liberaba. Regla general: **no retener el productor mientras se espera al
+    consumidor** — `drop(engine)` antes de `drained_rx.await`.
 - **P4.4** ⏳ Pendiente — Cancelación/Pausa reales.
 - **P4.5** ⏳ Pendiente — Deprecar `apps/gui` (egui) y `apps/gui-iced`.
 
