@@ -1,30 +1,37 @@
-//! Backend Tauri de CopyForge (P4.2 + P4.3).
+//! Backend Tauri de CopyForge (P4.2 → P4.6a).
 //!
 //! Expone al frontend:
 //! - `get_options` / `set_options`: [`GuiOptions`] actúa de DTO en la frontera con
 //!   `copyforge_core::CopyOptions` (los tipos del motor no tienen serde y
 //!   `crates/core` no se toca).
 //! - `adjust_window_size`: fallback del redimensionado desde Rust.
-//! - `start_copy` / `cancel_copy`: arranque y cancelación de una copia real con
-//!   `copyforge_core::CopyEngine`, retransmitiendo sus `CopyEvent` al frontend
-//!   como eventos `copy-event` ([`CopyEventDto`]).
+//! - `pause_copy` / `cancel_copy`: pausa y cancelación de la copia en curso.
+//! - `drain_transfers` / `start_transfer`: arranque desde la CLI
+//!   (`copyforge-gui-tauri copy|move <src...> --to <dst>`) con re-lanzamiento vía
+//!   `tauri_plugin_single_instance`; concatena los planes con [`CopyPlan::extend`].
 //!
 //! Diseño: la GUI monitoriza una cola de tareas (la pestaña «Lista de copia»),
 //! no una ventana por copia; por eso el estado de la copia en curso vive en
 //! [`CopyState`] en vez de crear una ventana nueva por operación.
 
+mod cli;
+
+pub use cli::LaunchArgs;
+
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use clap::Parser;
+
 use copyforge_core::{
-    build_plan, CopyEngine, CopyEvent, CopyOptions, DurabilityPolicy, OverwritePolicy,
+    build_plan, CopyEngine, CopyEvent, CopyOptions, CopyPlan, DurabilityPolicy, OverwritePolicy,
     VerifyPolicy,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 
 /// DTO de frontera con el frontend (React).
 ///
@@ -171,6 +178,64 @@ impl Default for GuiOptions {
     fn default() -> Self {
         CopyOptions::default().into()
     }
+}
+
+/// Modo de transferencia que cruza la frontera (CLI y eventos).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TransferMode {
+    Copy,
+    Move,
+}
+
+/// Petición de transferencia encolada por otra instancia (P4.6a).
+///
+/// La produce el callback de `tauri_plugin_single_instance` (o el arranque con
+/// argumentos) y la consume el frontend con `drain_transfers`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferRequest {
+    pub srcs: Vec<String>,
+    pub dst: String,
+    pub options: GuiOptions,
+    pub mode: TransferMode,
+}
+
+/// Payload del evento `transfer-moved` (P4.6a): resultado del borrado de
+/// orígenes en modo `move`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MovedPayload {
+    pub deleted: u32,
+    pub failed: u32,
+}
+
+/// Transferencias encoladas por otras instancias (P4.6a).
+///
+/// El callback de `tauri_plugin_single_instance` hace `push` y el frontend las
+/// drena con `drain_transfers`. Es un `Mutex` (se toma y se suelta sin cruzar
+/// ningún `await`) porque el callback es síncrono.
+#[derive(Default)]
+struct PendingCommands(Mutex<Vec<TransferRequest>>);
+
+/// Validación ad-hoc del modo `move` (P4.6a).
+///
+/// **Bloqueante** (no va dentro de una tarea): solo usa `std::fs`, así que es
+/// barata. Rechaza pares autodestructivos: igualdad canónica o contención en
+/// ambos sentidos **por componentes** (`Path::starts_with`), no por prefijo de
+/// cadena. Si `dst` aún no existe no se puede canonalizar; la comprobación de
+/// contención sobre las rutas crudas cubre ese caso.
+fn validate_move_pair(src: &Path, dst: &Path) -> Result<(), String> {
+    if dst.starts_with(src) || src.starts_with(dst) {
+        return Err("origen y destino se contienen mutuamente".to_string());
+    }
+    if let (Ok(s), Ok(d)) = (std::fs::canonicalize(src), std::fs::canonicalize(dst)) {
+        if s == d {
+            return Err("el origen y el destino son la misma ruta".to_string());
+        }
+        if d.starts_with(&s) || s.starts_with(&d) {
+            return Err("origen y destino se contienen mutuamente".to_string());
+        }
+    }
+    Ok(())
 }
 
 /// Ruta en texto (lossy: las rutas de Windows/Unix que no son UTF-8 no son
@@ -335,31 +400,48 @@ impl Drop for ReleaseToken {
     }
 }
 
-/// Lanza una copia real con el motor de `copyforge_core`.
+/// Lanza una transferencia (P4.6a) con el motor de `copyforge_core`.
 ///
-/// Se valida y planifica antes de arrancar, así que un error de rutas (origen
-/// inexistente, destino dentro del origen, …) vuelve como error del comando en
-/// vez de perderse en los eventos. El motor corre en una tarea aparte y sus
-/// `CopyEvent` se reenvían al frontend por el canal `copy-event`.
+/// Acepta varios `srcs` y los concatena en un solo plan ([`CopyPlan::extend`]), así
+/// que la GUI sigue monitorizando una única cola. En modo `move` valida cada par
+/// ([`validate_move_pair`]) antes de arrancar y, si la copia fue limpia, borra los
+/// orígenes emitiendo `transfer-moved`.
 #[tauri::command]
-async fn start_copy(
+async fn start_transfer(
     app: tauri::AppHandle,
     state: State<'_, CopyState>,
-    src: String,
+    srcs: Vec<String>,
     dst: String,
     options: GuiOptions,
+    mode: TransferMode,
 ) -> Result<(), String> {
-    let src_path = std::path::PathBuf::from(&src);
+    if srcs.is_empty() {
+        return Err("hace falta al menos un origen".to_string());
+    }
     let dst_path = std::path::PathBuf::from(&dst);
     let core_options: CopyOptions = options.into();
 
-    let plan = build_plan(&src_path, &dst_path, &core_options).map_err(|e| e.to_string())?;
+    // Un solo plan concatenado: la cola de la GUI no cambia de forma.
+    let mut plan: Option<CopyPlan> = None;
+    for src in &srcs {
+        let src_path = std::path::PathBuf::from(src);
+        if mode == TransferMode::Move {
+            validate_move_pair(&src_path, &dst_path)?;
+        }
+        let partial = build_plan(&src_path, &dst_path, &core_options).map_err(|e| e.to_string())?;
+        match &mut plan {
+            Some(acc) => acc.extend(partial),
+            None => plan = Some(partial),
+        }
+    }
+    let plan = plan.expect("hay al menos un origen");
     tracing::info!(
-        src = %src,
+        srcs = srcs.len(),
         dst = %dst,
+        mode = ?mode,
         tasks = plan.tasks.len(),
         total_bytes = plan.total_bytes,
-        "start_copy"
+        "start_transfer"
     );
 
     let (tx, mut rx) = mpsc::channel::<CopyEvent>(256);
@@ -391,9 +473,10 @@ async fn start_copy(
 
     // (3) El reenviador avisa cuando ha drenado el canal (incluido `Finished`).
     let (drained_tx, drained_rx) = oneshot::channel::<()>();
+    let forward_app = app.clone();
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
-            if let Err(e) = app.emit("copy-event", CopyEventDto::from(event)) {
+            if let Err(e) = forward_app.emit("copy-event", CopyEventDto::from(event)) {
                 tracing::warn!("no se pudo emitir `copy-event`: {e}");
                 break;
             }
@@ -408,18 +491,54 @@ async fn start_copy(
     tokio::spawn(async move {
         let _release = ReleaseToken { cancel };
 
-        let report = engine.run(plan).await; // panic ⇒ el guard limpia en el unwinding
-        tracing::info!(?report, "start_copy terminado");
-        // Soltar `events_tx` ANTES de esperar el drenaje: si no, el reenviador
-        // nunca ve el canal cerrado y el spawn se queda esperando un drenaje que
-        // no puede llegar (espera circular).
+        let report = engine.run(plan).await;
+        tracing::info!(?report, "start_transfer terminado");
+        // Soltar `events_tx` ANTES de esperar el drenaje (si no, espera circular).
         drop(engine);
 
         // Si el reenviador rompió por error de emit, el oneshot llega cerrado.
         let _ = drained_rx.await;
+
+        // Modo `move`: borrar los orígenes solo si la copia fue limpia.
+        if mode == TransferMode::Move && report.files_failed == 0 && report.files_skipped == 0 {
+            let mut deleted = 0u32;
+            let mut failed = 0u32;
+            for src in &srcs {
+                match std::fs::symlink_metadata(src) {
+                    Ok(meta) => {
+                        let result = if meta.is_dir() {
+                            tokio::fs::remove_dir_all(src).await
+                        } else {
+                            tokio::fs::remove_file(src).await
+                        };
+                        match result {
+                            Ok(()) => deleted += 1,
+                            Err(e) => {
+                                failed += 1;
+                                tracing::warn!("no se pudo borrar el origen {src}: {e}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        tracing::warn!("no se pudo borrar el origen {src}: {e}");
+                    }
+                }
+            }
+            let payload = MovedPayload { deleted, failed };
+            if let Err(e) = app.emit("transfer-moved", payload) {
+                tracing::warn!("no se pudo emitir `transfer-moved`: {e}");
+            }
+        }
     });
 
     Ok(())
+}
+
+/// Devuelve las transferencias encoladas por otras instancias (P4.6a).
+#[tauri::command]
+fn drain_transfers(state: State<'_, PendingCommands>) -> Vec<TransferRequest> {
+    std::mem::take(&mut *state.0.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// Pausa/reanuda la copia en curso (P4.4).
@@ -509,25 +628,54 @@ fn adjust_window_size(
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run(args: LaunchArgs) {
     // Sin subscriber, `tracing::info!` sería un no-op. Esto hace visibles los
     // logs en la consola donde corre `tauri dev`.
     let _ = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .try_init();
 
+    // Arranque con argumentos: encola la transferencia antes de crear la ventana,
+    // igual que haría una segunda instancia (el callback de single-instance solo
+    // dispara para las siguientes).
+    let pending = PendingCommands::default();
+    if let Some(request) = args.into_transfer_request() {
+        if let Ok(mut slot) = pending.0.lock() {
+            slot.push(request);
+        }
+        tracing::info!("transferencia inicial encolada desde argv");
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // P4.6a: una segunda instancia no abre ventana; encola su transferencia.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            match LaunchArgs::try_parse_from(argv) {
+                Ok(parsed) => {
+                    if let Some(request) = parsed.into_transfer_request() {
+                        if let Some(state) = app.try_state::<PendingCommands>() {
+                            if let Ok(mut slot) = state.0.lock() {
+                                slot.push(request);
+                            }
+                        }
+                        let _ = app.emit("copy-request", ());
+                    }
+                }
+                Err(e) => tracing::warn!("argv de la segunda instancia no parsea: {e}"),
+            }
+        }))
         .invoke_handler(tauri::generate_handler![
             get_options,
             set_options,
             adjust_window_size,
-            start_copy,
+            start_transfer,
             cancel_copy,
-            pause_copy
+            pause_copy,
+            drain_transfers
         ])
         .manage(CopyState::default())
+        .manage(pending)
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -671,5 +819,42 @@ mod tests {
         assert_eq!(mapped.parallel_files, 8);
         assert_eq!(mapped.exclusion, vec!["*.log", "target/**"]);
         assert_eq!(mapped.durability, DurabilityPolicy::Full);
+    }
+
+    #[test]
+    fn move_validation_rejects_same_and_contained_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+
+        // Mismo path.
+        assert!(validate_move_pair(&a, &a).is_err());
+        // dst dentro de src.
+        let inside = a.join("sub");
+        std::fs::create_dir_all(&inside).unwrap();
+        assert!(validate_move_pair(&a, &inside).is_err());
+        // src dentro de dst.
+        assert!(validate_move_pair(&inside, &a).is_err());
+        // Rutas disjuntas: válido.
+        assert!(validate_move_pair(&a, &b).is_ok());
+    }
+
+    #[test]
+    fn pending_commands_push_and_drain() {
+        let state = PendingCommands::default();
+        let req = TransferRequest {
+            srcs: vec!["/a".to_string()],
+            dst: "/b".to_string(),
+            options: GuiOptions::default(),
+            mode: TransferMode::Copy,
+        };
+        state.0.lock().unwrap().push(req.clone());
+        state.0.lock().unwrap().push(req.clone());
+
+        let drained = std::mem::take(&mut *state.0.lock().unwrap());
+        assert_eq!(drained.len(), 2);
+        assert!(state.0.lock().unwrap().is_empty());
     }
 }

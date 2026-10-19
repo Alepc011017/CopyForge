@@ -20,6 +20,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-dialog = "2.8.3"
@@ -33,7 +34,12 @@ copyforge-core = { path = "../../../crates/core" }
 # su `CancellationToken` se guarda en `State` para `cancel_copy`. Versiones
 # alineadas con las del workspace (este crate está excluido del workspace).
 tokio = { version = "1", features = ["sync", "rt", "macros"] }
+# CLI de la GUI (P4.6a): arranque y re-lanzamiento con rutas.
+clap = { version = "4", features = ["derive"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

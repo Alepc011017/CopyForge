@@ -7,6 +7,7 @@ import {
   type Theme,
 } from "@tauri-apps/api/window";
 import logoUrl from "../../../icon/CopyForge.svg";
+import type { MovedPayload, TransferRequest } from "./types";
 import "./App.css";
 
 type Tab = "lista" | "errores" | "opciones";
@@ -362,6 +363,56 @@ export default function App() {
     };
   }, []);
 
+  // Transferencias encoladas por la CLI (P4.6a). StrictMode monta los efectos dos
+  // veces en dev: el guard `drainedRef` evita drenar (y arrancar) dos veces.
+  const drainedRef = useRef(false);
+  useEffect(() => {
+    if (!hasBackend() || drainedRef.current) return;
+    drainedRef.current = true;
+    let unlisten: UnlistenFn | undefined;
+    let disposed = false;
+    const drain = async () => {
+      const pending = await invoke<TransferRequest[]>("drain_transfers");
+      for (const t of pending) {
+        await invoke("start_transfer", {
+          srcs: t.srcs,
+          dst: t.dst,
+          options: t.options,
+          mode: t.mode,
+        }).catch((e) =>
+          setStatusMsg({
+            text: `No se pudo iniciar una transferencia encolada: ${String(e)}`,
+            level: "error",
+          }),
+        );
+      }
+    };
+    void listen("copy-request", () => {
+      void drain();
+    })
+      .then((un) => {
+        if (disposed) un();
+        else unlisten = un;
+      })
+      .catch(() => {});
+    // Arranque con argumentos: la petición ya está en `PendingCommands`.
+    void drain();
+    // Resultado del borrado de orígenes en modo `move`.
+    void listen<MovedPayload>("transfer-moved", (ev) => {
+      setStatusMsg({
+        text:
+          ev.payload.failed > 0
+            ? `Move: ${ev.payload.deleted} orígenes borrados, ${ev.payload.failed} sin poder borrar`
+            : `Move: ${ev.payload.deleted} orígenes borrados`,
+        level: "warn",
+      });
+    }).catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   // Aplica el tamaño de la ventana: ancho base y altura = base + alto del panel
   // (cuando `expanded`). Si está maximizada y ya tiene sitio de sobra no se toca,
   // porque redimensionarla la restauraría; si está maximizada pero el contenido no
@@ -570,7 +621,7 @@ export default function App() {
     cancelledRef.current = false;
     setCopyProgress(null);
     setStatusMsg(null);
-    invoke("start_copy", { src, dst, options }).catch((e) =>
+    invoke("start_transfer", { srcs: [src], dst, options, mode: "copy" }).catch((e) =>
       setStatusMsg({
         text: `No se pudo iniciar la copia: ${String(e)}`,
         level: "error",

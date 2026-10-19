@@ -275,6 +275,23 @@ el mismo motor Rust.
     Funcionalmente correcto, pero anti-patrón.
   - Verificación: 38 tests de core; smoke en ventana con `COPYFORGE_THROTTLE_US`:
     pausa 5 s ⇒ no arrancan más ficheros; reanudar ⇒ 4 ficheros, 0 fallos.
+- **P4.6a** 🔄 En curso — CLI en la GUI (`<hash-p4.6a>`).
+  - `src/cli.rs`: `LaunchArgs` + `Command::Copy/Move(TransferArgs)` (clap);
+    `From<TransferArgs> for GuiOptions`; re-exportado como `LaunchArgs`.
+  - `main.rs`: `run(LaunchArgs::parse())`; `run(args)` encola la transferencia inicial en
+    `PendingCommands` (la primera instancia no dispara el callback de single-instance).
+  - `tauri_plugin_single_instance`: una segunda instancia re-parsea su argv, hace `push` y
+    emite `copy-request`; el frontend la recoge con `drain_transfers`.
+  - `start_transfer(app, state, srcs, dst, options, mode)` (sustituye a `start_copy`):
+    concatena los planes con `CopyPlan::extend` (una sola cola) y, en modo `move`, borra
+    los orígenes si `files_failed == 0 && files_skipped == 0`, emitiendo `transfer-moved`.
+  - Validación ad-hoc de `move` (bloqueante, `validate_move_pair`): rechaza igualdad
+    canónica y contención por componentes en ambos sentidos.
+  - Frontend: efecto de montaje con guard `drainedRef` (StrictMode) que drena y arranca cada
+    transferencia; `startCopy` pasa `srcs: [src], mode: "copy"`; escucha `transfer-moved`.
+  - Tests: parseo de la CLI (copy/move, defaults, valores desconocidos), `validate_move_pair`,
+    `PendingCommands` (push/drain) y `CopyPlan::extend` en core.
+  - Depende de P4.4 ✅; P0.5 sigue ⏳ (el check ad-hoc lo cubre mientras tanto).
 - **P4.5** ⏳ Pendiente — Deprecar `apps/gui` (egui) y `apps/gui-iced`.
 
 ### Nota de entorno (Linux local)
