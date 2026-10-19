@@ -249,7 +249,7 @@ el mismo motor Rust.
     se cierra hasta soltar `events_tx`, la espera era circular y el token nunca
     se liberaba. Regla general: **no retener el productor mientras se espera al
     consumidor** — `drop(engine)` antes de `drained_rx.await`.
-- **P4.4** 🔄 En curso — Pausa/reanudar reales (`<hash-p4.4>`).
+- **P4.4** 🔄 En curso — Pausa/reanudar reales (`b1d635e`).
   - Motor: `CopyEngine::with_pause(options, tx, paused)` + flag `Arc<AtomicBool>`
     consultado en la puerta entre ficheros y en el bucle de `copy_file` (entre
     chunks); la cancelación sigue funcionando en pausa. `COPYFORGE_THROTTLE_US`
