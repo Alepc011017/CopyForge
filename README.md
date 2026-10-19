@@ -1,5 +1,9 @@
 # CopyForge
 
+> ⚠️ **Estado del proyecto: beta / RC.** CopyForge es usable en el día a día,
+> pero sigue en desarrollo activo: CLI, API de `copyforge-core`, formato de
+> reportes y GUI pueden cambiar entre releases sin garantía de compatibilidad.
+
 Motor de copia de archivos multiplataforma estilo TeraCopy, escrito en Rust.
 Copia archivos y carpetas con verificación de integridad, progreso en tiempo
 real, políticas de sobrescritura y niveles de durabilidad configurables.

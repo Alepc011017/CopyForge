@@ -1,5 +1,9 @@
 # copyforge-gui-tauri
 
+> ⚠️ **Estado del proyecto: beta / RC.** CopyForge es usable en el día a día,
+> pero sigue en desarrollo activo: CLI, API de `copyforge-core`, formato de
+> reportes y GUI pueden cambiar entre releases sin garantía de compatibilidad.
+
 GUI oficial de **CopyForge**, construida con **Tauri 2** (backend Rust + frontend
 React/TypeScript + Vite). Sustituye a la GUI antigua de egui (`apps/gui`) y al
 prototipo descartado de Iced (`apps/gui-iced`, congelado en la rama
