@@ -219,7 +219,7 @@ el mismo motor Rust.
     dentro de `apps/gui-tauri/src-tauri` (el crate está excluido del workspace,
     la puerta de la raíz no lo cubre) + `npm run build`.
 
-- **P4.3-fix2** ✅ Hecho — `<hash-fix2>` — Arranque único, liberación del token
+- **P4.3-fix2** ✅ Hecho — `80fd3dd` — Arranque único, liberación del token
   y `copy-cancelled`.
   - `CopyState.cancel` pasa a `Arc<Mutex<Option<CancellationToken>>>` y
     `CopyState` a `#[derive(Clone, Default)]`. Motivo: el guard `ReleaseToken`
