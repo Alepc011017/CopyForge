@@ -266,6 +266,15 @@ el mismo motor Rust.
     montaría dos veces y el segundo `start_transfer` recibiría `Err("ya hay una copia
     en curso")`. Fix: guard con ref (`drainedRef.current`) en el efecto de montaje.
     En producción no aplica; en dev solo ensucia el log. Anotado, sin implementar.
+- **P4.4-fix** ✅ Hecho — `1be3900` — `tokio::time::sleep` en vez de busy-wait.
+  - `wait()` (`yield_now` + `spin_loop`) se sustituye por `tokio::time::sleep` en los
+    tres sitios (puerta entre ficheros, gate entre chunks y throttle de depuración).
+    Se añade el feature `time` a tokio en `crates/core`.
+  - Motivo: el busy-wait cooperativo con 8 tareas pausadas y 8 workers subía la CPU
+    al ~100 % durante la pausa (ventilador/batería en una GUI de escritorio).
+    Funcionalmente correcto, pero anti-patrón.
+  - Verificación: 38 tests de core; smoke en ventana con `COPYFORGE_THROTTLE_US`:
+    pausa 5 s ⇒ no arrancan más ficheros; reanudar ⇒ 4 ficheros, 0 fallos.
 - **P4.5** ⏳ Pendiente — Deprecar `apps/gui` (egui) y `apps/gui-iced`.
 
 ### Nota de entorno (Linux local)
