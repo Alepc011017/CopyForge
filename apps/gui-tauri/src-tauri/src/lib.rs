@@ -224,9 +224,8 @@ struct PendingCommands(Mutex<Vec<TransferRequest>>);
 /// cadena. Si `dst` aún no existe no se puede canonalizar; la comprobación de
 /// contención sobre las rutas crudas cubre ese caso.
 fn validate_move_pair(src: &Path, dst: &Path) -> Result<(), String> {
-    if dst.starts_with(src) || src.starts_with(dst) {
-        return Err("origen y destino se contienen mutuamente".to_string());
-    }
+    // Igualdad canónica primero: si ambos existen y son la misma ruta, ese es el
+    // mensaje (la contención también la cubriría, pero es menos preciso).
     if let (Ok(s), Ok(d)) = (std::fs::canonicalize(src), std::fs::canonicalize(dst)) {
         if s == d {
             return Err("el origen y el destino son la misma ruta".to_string());
@@ -234,6 +233,11 @@ fn validate_move_pair(src: &Path, dst: &Path) -> Result<(), String> {
         if d.starts_with(&s) || s.starts_with(&d) {
             return Err("origen y destino se contienen mutuamente".to_string());
         }
+    }
+    // Sin poder canonalizar (p. ej. `dst` aún no existe), la contención por
+    // componentes sobre las rutas crudas cubre el caso habitual.
+    if dst.starts_with(src) || src.starts_with(dst) {
+        return Err("origen y destino se contienen mutuamente".to_string());
     }
     Ok(())
 }

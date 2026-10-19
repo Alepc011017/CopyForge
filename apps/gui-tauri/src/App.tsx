@@ -363,12 +363,12 @@ export default function App() {
     };
   }, []);
 
-  // Transferencias encoladas por la CLI (P4.6a). StrictMode monta los efectos dos
-  // veces en dev: el guard `drainedRef` evita drenar (y arrancar) dos veces.
+  // Transferencias encoladas por la CLI (P4.6a). El listener de `copy-request` se
+  // registra en cada montaje (StrictMode lo des-registra en la limpieza), y el
+  // guard `drainedRef` solo cubre el drenado inicial con argv.
   const drainedRef = useRef(false);
   useEffect(() => {
-    if (!hasBackend() || drainedRef.current) return;
-    drainedRef.current = true;
+    if (!hasBackend()) return;
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
     const drain = async () => {
@@ -396,7 +396,10 @@ export default function App() {
       })
       .catch(() => {});
     // Arranque con argumentos: la petición ya está en `PendingCommands`.
-    void drain();
+    if (!drainedRef.current) {
+      drainedRef.current = true;
+      void drain();
+    }
     // Resultado del borrado de orígenes en modo `move`.
     void listen<MovedPayload>("transfer-moved", (ev) => {
       setStatusMsg({
