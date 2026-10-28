@@ -302,7 +302,7 @@ el mismo motor Rust.
     - **V3 `validate_move_pair`**: `src==dst` ⇒ `"el origen y el destino son la misma
       ruta"`; `dst⊂src` y `src⊂dst` ⇒ `"origen y destino se contienen mutuamente"`;
       rutas disjuntas ⇒ `Ok`; no toca el disco.
-- **P4.6b** ✅ Hecho — `<hash-p4.6b>` — Extensión de Nautilus (`integrations/nautilus/`).
+- **P4.6b** ✅ Hecho — `7b3d961` — Extensión de Nautilus (`integrations/nautilus/`).
   - `copyforge_extension.py` (274 líneas; antes 685): menús planos de fondo
     (`Pegar con CopyForge` → `copy`/`move` según el portapapeles, `Mover aquí con CopyForge`)
     y de selección (`Copiar con CopyForge` → `copy`, `Mover con CopyForge` → `cut`).
