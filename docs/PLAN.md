@@ -275,7 +275,7 @@ el mismo motor Rust.
     Funcionalmente correcto, pero anti-patrón.
   - Verificación: 38 tests de core; smoke en ventana con `COPYFORGE_THROTTLE_US`:
     pausa 5 s ⇒ no arrancan más ficheros; reanudar ⇒ 4 ficheros, 0 fallos.
-- **P4.6a** 🔄 En curso — CLI en la GUI (`a6ef65c`).
+- **P4.6a** ✅ Hecho — `a6ef65c` (+ `eb04e0a`) — CLI en la GUI.
   - `src/cli.rs`: `LaunchArgs` + `Command::Copy/Move(TransferArgs)` (clap);
     `From<TransferArgs> for GuiOptions`; re-exportado como `LaunchArgs`.
   - `main.rs`: `run(LaunchArgs::parse())`; `run(args)` encola la transferencia inicial en
@@ -292,6 +292,53 @@ el mismo motor Rust.
   - Tests: parseo de la CLI (copy/move, defaults, valores desconocidos), `validate_move_pair`,
     `PendingCommands` (push/drain) y `CopyPlan::extend` en core.
   - Depende de P4.4 ✅; P0.5 sigue ⏳ (el check ad-hoc lo cubre mientras tanto).
+  - Verificación de cierre (V1–V3, las tres bloqueantes):
+    - **V1 single-instance**: 2.ª instancia con args ⇒ `exit 0` en 0,107 s y sin ventana
+      (0 `get_options`); la 1.ª sigue viva y ejecuta la tarea
+      (`start_transfer ... mode=Copy files_copied=1`).
+    - **V2 move + `--overwrite never` con destino existente**: `files_skipped=1`,
+      `files_failed=0`, origen intacto con su contenido y destino sin cambios
+      (no se borra nada si hay saltados).
+    - **V3 `validate_move_pair`**: `src==dst` ⇒ `"el origen y el destino son la misma
+      ruta"`; `dst⊂src` y `src⊂dst` ⇒ `"origen y destino se contienen mutuamente"`;
+      rutas disjuntas ⇒ `Ok`; no toca el disco.
+- **P4.6b** ✅ Hecho — `<hash-p4.6b>` — Extensión de Nautilus (`integrations/nautilus/`).
+  - `copyforge_extension.py` (274 líneas; antes 685): menús planos de fondo
+    (`Pegar con CopyForge` → `copy`/`move` según el portapapeles, `Mover aquí con CopyForge`)
+    y de selección (`Copiar con CopyForge` → `copy`, `Mover con CopyForge` → `cut`).
+  - Se elimina el terminal (`_write_temp_script`, `_build_terminal_command`,
+    `_find_terminal`, `TERMINAL_CANDIDATES`, `OPEN_TERMINAL`,
+    `KEEP_TERMINAL_ON_SUCCESS`), el `flock` (`_lock_path_for`, `SERIALIZE_OPERATIONS`),
+    los colores, `STOP_ON_ERROR`, `MOVE_VERIFY`, `CLEAN_STALE_TEMPS`/`STALE_TEMP_AGE_MIN`,
+    `LOG_MAX_BYTES` y `DEBUG_MODE`. `_launch(mode, dst, srcs)` lanza
+    `copyforge-gui-tauri <mode> <src...> --to <dst> --overwrite always --verify size`
+    con `Popen(..., start_new_session=True)`; la GUI encola y el motor de `crates/core`
+    ejecuta (sin tocar `crates/core`).
+  - **Bug de `cut` corregido**: se intenta `x-special/gnome-copied-files` **primero**
+    (`wl-paste`/`xclip`), el único tipo que distingue copiar de cortar; solo si falla se
+    usa `Gdk.FileList` y, después, `text/uri-list` (con `"copy"` asumido, porque no
+    llevan la acción).
+  - `copyforge_ext_logic.py`: lógica pura **sin `gi`** (`parse_clipboard`,
+    `filter_sources`, `gui_bin`, comandos y payload del portapapeles) para testearla sin
+    Nautilus.
+  - `_notify_error`: `zenity --error` si está instalado; siempre stderr y
+    `~/.local/state/copyforge/nautilus.log` (`COPYFORGE_LOG` lo cambia).
+  - `install.sh`: copia a `~/.local/share/nautilus-python/extensions`, detecta
+    `nautilus-python` (con pistas por distro), avisa de `wl-clipboard`/`xclip`/`zenity`
+    y soporta `--uninstall`.
+  - Tests: `python3 -m unittest discover integrations/nautilus/tests` ⇒ 21 OK, sin `gi`.
+  - Smoke real en esta máquina (GNOME nautilus 50.2.2, typelib Nautilus 4.1, pygobject
+    3.56.2, `wl-clipboard` 2.x + zenity): Nautilus carga la extensión
+    (`init: gui=... portapapeles=['wl-paste', ...]` en el log) y, con `gi` real y objetos
+    simulados, los cuatro menús salen con su etiqueta; `cut` ⇒ `mode=Move` con origen
+    borrado tras copia limpia; `copy` ⇒ `mode=Copy` con origen intacto;
+    `_on_copy`/`_on_cut` escriben `copy`/`cut` + `file://…` en el portapapeles.
+    No se pudo pulsar el menú en la ventana (el agente no interactúa con el SO), así que
+    la comprobación es de carga real + código de menús/callbacks, no de clic visual.
+  - Pendiente de entorno: el binario de la GUI debe estar en `PATH` o en
+    `COPYFORGE_GUI_BIN` del **entorno de la sesión** (Nautilus no hereda el shell). En
+    esta máquina no está en `PATH` (`init: gui=None`); el smoke se hizo exportando la
+    variable. Documentado en el README.
 - **P4.5** ⏳ Pendiente — Deprecar `apps/gui` (egui) y `apps/gui-iced`.
 
 ### Nota de entorno (Linux local)
