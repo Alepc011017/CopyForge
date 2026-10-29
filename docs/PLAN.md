@@ -12,7 +12,7 @@
 - **P0.2** ✅ Hecho — `build_effective_dest` + 4 tests (file→new, file→dir, dir→new, dir→dir). API aditiva, `build_plan` mantiene firma. Commit: `<hash>`.
 - **P0.3** ✅ Hecho — Concurrencia real: `acquire_owned()` movido DENTRO del `tokio::spawn` en `crates/core/src/engine.rs:58-68`. Paralelismo real sin deadlock (uso único del semáforo, N>=1, sin adquisición anidada, guard liberado al terminar `copy_task`). Commit: `3e33111`.
 - **P0.4** ✅ Hecho — Error tipado: `FileResult::Failed{CopyError}` (interno, no breaking) en `crates/core/src/engine.rs`; `VerifyFailed` en Size/Hash y `Cancelled` en cancelación; `#[non_exhaustive]` en `CopyError`. Frontera pública (`CopyEvent::FileFailed`, `Report.errors`) sigue `String` vía `to_string()` — ver nota breaking abajo. Commit: `3e33111`.
-- **P0.5** ✅ Hecho — `<hash-p0.5>` — Validación `src==dst` y contención mutua (H-4) en `build_plan`.
+- **P0.5** ✅ Hecho — `4e3a756` — Validación `src==dst` y contención mutua (H-4) en `build_plan`.
   - `scanner::validate_paths` compara **por componentes** tras `canonicalize_lossy`
     (tolera `dst` inexistente) y devuelve `CopyError::InvalidDestination`:
     `src==dst` → "el origen y el destino son la misma ruta"; `dst⊂src` o `src⊂dst` →
@@ -113,7 +113,7 @@
 - **H-1 (P1)** — `preserve_permissions` no preservaba `mtime` (recopiaba siempre en la segunda pasada). Resuelto en P1.3 con `preserve_metadata` + skips `Identical`. Estado: ✅ Hecho.
 - **H-2 (P1)** — Sin `fsync`: `flush()` antes del rename no garantiza durabilidad. Resuelto vía `DurabilityPolicy` (P0.6a) + `sync_dir` en `platform.rs`: Unix hace `fsync` del padre; Windows es no-op documentado (NTFS journaliza metadatos, P1.1c-fix3). Estado: ✅ Hecho.
 - **H-3 (P0)** — Temporales huérfanos (`*.copyforge.tmp`): resuelto en P1.4 con `NamedTempFile` (prefijo `.copyforge-tmp-`, auto-borrado) + limpieza al inicio de `run()` con gate >1h. Nota: el walk es anterior a la limpieza; un huérfano planificado falla de forma benigna (ver doc en `build_plan`). Estado: ✅ Hecho.
-- **H-4 (P0)** — Sin validación `src==dst` ni contención origen/destino: riesgo de recursión explosiva/autosobrescritura. Resuelto en P0.5 con `scanner::validate_paths` (por componentes, `canonicalize_lossy`) + `validate_effective_paths` como defensa en profundidad; el error se propaga a CLI y GUI desde `build_plan`. Estado: ✅ Hecho (`<hash-p0.5>`).
+- **H-4 (P0)** — Sin validación `src==dst` ni contención origen/destino: riesgo de recursión explosiva/autosobrescritura. Resuelto en P0.5 con `scanner::validate_paths` (por componentes, `canonicalize_lossy`) + `validate_effective_paths` como defensa en profundidad; el error se propaga a CLI y GUI desde `build_plan`. Estado: ✅ Hecho (`4e3a756`).
 - **H-5 (P2)** — El progreso nunca llega a 100% con skips: `total_bytes` se calcula en el plan (`crates/core/src/engine.rs:34-36`) pero `Never/IfDifferent` luego saltan ficheros sin restar. Afectado además: `apps/cli/src/ui.rs`, `apps/gui/src/app.rs:303-307`. Estado: ⏳ Pendiente.
 - **H-6 (P1)** — Symlink en Windows exige privilegio/Developer Mode. Resuelto en P1.6 con fallback a copiar contenido + `SymlinkFallback` (clasificador `PermissionDenied` + 5/1314). Sub-caso symlink-roto-a-dir: limitación conocida sin fix. Estado: ✅ Hecho.
 - **H-7 (P0)** — `report.errors` sin cota: con millones de fallos puede agotar memoria. Capar (p.ej. 1000) + contador `errors_truncated`. Afectado: `crates/core/src/engine.rs:89-93`, `crates/core/src/events.rs`. Estado: ⏳ Pendiente.
