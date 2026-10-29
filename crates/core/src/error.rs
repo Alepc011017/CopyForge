@@ -16,6 +16,11 @@ pub enum CopyError {
     #[error("cancelado")]
     Cancelled,
 
+    /// Destino inválido (P0.5, H-4): `src == dst` o contención mutua entre
+    /// origen y destino, detectado por `scanner::validate_paths`.
+    ///
+    /// `reason` ya viene redactado para el usuario en español: "el origen y el
+    /// destino son la misma ruta" u "origen y destino se contienen mutuamente".
     #[error("destino inválido: {reason}")]
     InvalidDestination { reason: String },
 

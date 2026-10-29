@@ -12,7 +12,25 @@
 - **P0.2** ✅ Hecho — `build_effective_dest` + 4 tests (file→new, file→dir, dir→new, dir→dir). API aditiva, `build_plan` mantiene firma. Commit: `<hash>`.
 - **P0.3** ✅ Hecho — Concurrencia real: `acquire_owned()` movido DENTRO del `tokio::spawn` en `crates/core/src/engine.rs:58-68`. Paralelismo real sin deadlock (uso único del semáforo, N>=1, sin adquisición anidada, guard liberado al terminar `copy_task`). Commit: `3e33111`.
 - **P0.4** ✅ Hecho — Error tipado: `FileResult::Failed{CopyError}` (interno, no breaking) en `crates/core/src/engine.rs`; `VerifyFailed` en Size/Hash y `Cancelled` en cancelación; `#[non_exhaustive]` en `CopyError`. Frontera pública (`CopyEvent::FileFailed`, `Report.errors`) sigue `String` vía `to_string()` — ver nota breaking abajo. Commit: `3e33111`.
-- **P0.5** ⏳ Pendiente — Validación `src==dst` y `dst⊂src` (H-4): abortar antes de `build_plan` con `CopyError::InvalidDestination`. Afecta `crates/core/src/scanner.rs:11-14`, `apps/cli/src/runner.rs`, `apps/gui/src/app.rs`.
+- **P0.5** ✅ Hecho — `<hash-p0.5>` — Validación `src==dst` y contención mutua (H-4) en `build_plan`.
+  - `scanner::validate_paths` compara **por componentes** tras `canonicalize_lossy`
+    (tolera `dst` inexistente) y devuelve `CopyError::InvalidDestination`:
+    `src==dst` → "el origen y el destino son la misma ruta"; `dst⊂src` o `src⊂dst` →
+    "origen y destino se contienen mutuamente". `validate_effective_paths` queda como
+    defensa en profundidad (destino efectivo == `src` o dentro de `src`).
+  - Mensajes en español, con la misma redacción que mostraba `validate_move_pair` en la GUI.
+  - `apps/gui-tauri`: se elimina `validate_move_pair` (duplicaba la regla); `start_transfer`
+    propaga tal cual el error de `build_plan` (también en modo `copy`).
+  - Tests: `validate_rejects_same_src_dst`, `validate_rejects_dst_inside_src`,
+    `validate_rejects_src_inside_dst` (antes permitía) y
+    `build_plan_rejects_invalid_destination_pairs` en core (40); el equivalente del crate
+    Tauri pasa a llamar a `build_plan` (siguen 15). CLI verificado: los tres casos dan
+    `destino inválido: …` con exit 1 y sin tocar nada; la copia disjunta sigue OK.
+  - Trade-off documentado: al rechazar también `src⊂dst` se pierde `copy <ruta> --to <abuelo>`
+    (destino efectivo distinto de `src`) aunque no era peligroso; es la política que ya
+    aplicaba la GUI. Para relajarlo basta con dejar solo `dst.starts_with(src)` en
+    `validate_paths`: los casos realmente autodestructivos los cubre
+    `validate_effective_paths`.
 - **P0.6a** ✅ Hecho — `DurabilityPolicy { None, File, Full }` (default `File`; cambio documentado respecto al anterior equivalente a `None`): `apply_durability` con `sync_all` del temporal pre-rename para `File|Full`; `sync_parent_dir` post-rename solo en `Full` (Unix; Windows degrada a `File` con `warn` una sola vez por invocación vía `Arc<Once>` creado en `run()`). CLI `--durability <none|file|full>` (default `file`). 2 tests de contenido. Sin commitear todavía.
 - **P0.6b** ⏳ Pendiente (siguiente paso) — Test de integración: con `Full` en Unix, verificar que el directorio padre se sincroniza.
 - **P0.7** ✅ Hecho — Cap en `report.errors`: `CopyOptions.max_errors` (default 1000) + `Report.errors_truncated`; se conservan los primeros N, el resto solo cuenta. CLI imprime “N errores adicionales omitidos (total: M)”; GUI lo muestra junto a la lista. 2 tests + verificación real con 1005 fallos. Sin commitear todavía.
@@ -95,7 +113,7 @@
 - **H-1 (P1)** — `preserve_permissions` no preservaba `mtime` (recopiaba siempre en la segunda pasada). Resuelto en P1.3 con `preserve_metadata` + skips `Identical`. Estado: ✅ Hecho.
 - **H-2 (P1)** — Sin `fsync`: `flush()` antes del rename no garantiza durabilidad. Resuelto vía `DurabilityPolicy` (P0.6a) + `sync_dir` en `platform.rs`: Unix hace `fsync` del padre; Windows es no-op documentado (NTFS journaliza metadatos, P1.1c-fix3). Estado: ✅ Hecho.
 - **H-3 (P0)** — Temporales huérfanos (`*.copyforge.tmp`): resuelto en P1.4 con `NamedTempFile` (prefijo `.copyforge-tmp-`, auto-borrado) + limpieza al inicio de `run()` con gate >1h. Nota: el walk es anterior a la limpieza; un huérfano planificado falla de forma benigna (ver doc en `build_plan`). Estado: ✅ Hecho.
-- **H-4 (P0)** — Sin validación `src==dst` ni `dst dentro de src`: riesgo de recursión explosiva/autosobrescritura. Afectado: `crates/core/src/scanner.rs:11-14`, `apps/cli/src/runner.rs`, `apps/gui/src/app.rs`. Estado: ⏳ Pendiente.
+- **H-4 (P0)** — Sin validación `src==dst` ni contención origen/destino: riesgo de recursión explosiva/autosobrescritura. Resuelto en P0.5 con `scanner::validate_paths` (por componentes, `canonicalize_lossy`) + `validate_effective_paths` como defensa en profundidad; el error se propaga a CLI y GUI desde `build_plan`. Estado: ✅ Hecho (`<hash-p0.5>`).
 - **H-5 (P2)** — El progreso nunca llega a 100% con skips: `total_bytes` se calcula en el plan (`crates/core/src/engine.rs:34-36`) pero `Never/IfDifferent` luego saltan ficheros sin restar. Afectado además: `apps/cli/src/ui.rs`, `apps/gui/src/app.rs:303-307`. Estado: ⏳ Pendiente.
 - **H-6 (P1)** — Symlink en Windows exige privilegio/Developer Mode. Resuelto en P1.6 con fallback a copiar contenido + `SymlinkFallback` (clasificador `PermissionDenied` + 5/1314). Sub-caso symlink-roto-a-dir: limitación conocida sin fix. Estado: ✅ Hecho.
 - **H-7 (P0)** — `report.errors` sin cota: con millones de fallos puede agotar memoria. Capar (p.ej. 1000) + contador `errors_truncated`. Afectado: `crates/core/src/engine.rs:89-93`, `crates/core/src/events.rs`. Estado: ⏳ Pendiente.
@@ -292,7 +310,7 @@ el mismo motor Rust.
     transferencia; `startCopy` pasa `srcs: [src], mode: "copy"`; escucha `transfer-moved`.
   - Tests: parseo de la CLI (copy/move, defaults, valores desconocidos), `validate_move_pair`,
     `PendingCommands` (push/drain) y `CopyPlan::extend` en core.
-  - Depende de P4.4 ✅; P0.5 sigue ⏳ (el check ad-hoc lo cubre mientras tanto).
+  - Depende de P4.4 ✅. El check ad-hoc `validate_move_pair` se retiró en P0.5 (la regla vive ya en `build_plan`).
   - Verificación de cierre (V1–V3, las tres bloqueantes):
     - **V1 single-instance**: 2.ª instancia con args ⇒ `exit 0` en 0,107 s y sin ventana
       (0 `get_options`); la 1.ª sigue viva y ejecuta la tarea

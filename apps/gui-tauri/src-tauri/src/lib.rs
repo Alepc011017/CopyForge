@@ -216,32 +216,6 @@ pub struct MovedPayload {
 #[derive(Default)]
 struct PendingCommands(Mutex<Vec<TransferRequest>>);
 
-/// Validación ad-hoc del modo `move` (P4.6a).
-///
-/// **Bloqueante** (no va dentro de una tarea): solo usa `std::fs`, así que es
-/// barata. Rechaza pares autodestructivos: igualdad canónica o contención en
-/// ambos sentidos **por componentes** (`Path::starts_with`), no por prefijo de
-/// cadena. Si `dst` aún no existe no se puede canonalizar; la comprobación de
-/// contención sobre las rutas crudas cubre ese caso.
-fn validate_move_pair(src: &Path, dst: &Path) -> Result<(), String> {
-    // Igualdad canónica primero: si ambos existen y son la misma ruta, ese es el
-    // mensaje (la contención también la cubriría, pero es menos preciso).
-    if let (Ok(s), Ok(d)) = (std::fs::canonicalize(src), std::fs::canonicalize(dst)) {
-        if s == d {
-            return Err("el origen y el destino son la misma ruta".to_string());
-        }
-        if d.starts_with(&s) || s.starts_with(&d) {
-            return Err("origen y destino se contienen mutuamente".to_string());
-        }
-    }
-    // Sin poder canonalizar (p. ej. `dst` aún no existe), la contención por
-    // componentes sobre las rutas crudas cubre el caso habitual.
-    if dst.starts_with(src) || src.starts_with(dst) {
-        return Err("origen y destino se contienen mutuamente".to_string());
-    }
-    Ok(())
-}
-
 /// Ruta en texto (lossy: las rutas de Windows/Unix que no son UTF-8 no son
 /// representables; la UI no las necesita ver en crudo).
 fn path_str(path: &Path) -> String {
@@ -407,9 +381,10 @@ impl Drop for ReleaseToken {
 /// Lanza una transferencia (P4.6a) con el motor de `copyforge_core`.
 ///
 /// Acepta varios `srcs` y los concatena en un solo plan ([`CopyPlan::extend`]), así
-/// que la GUI sigue monitorizando una única cola. En modo `move` valida cada par
-/// ([`validate_move_pair`]) antes de arrancar y, si la copia fue limpia, borra los
-/// orígenes emitiendo `transfer-moved`.
+/// que la GUI sigue monitorizando una única cola. La validación de destinos
+/// (src==dst y contención mutua) la hace `build_plan` desde P0.5; su error se
+/// propaga tal cual al frontend. Si la copia fue limpia, en modo `move` borra
+/// los orígenes emitiendo `transfer-moved`.
 #[tauri::command]
 async fn start_transfer(
     app: tauri::AppHandle,
@@ -429,9 +404,6 @@ async fn start_transfer(
     let mut plan: Option<CopyPlan> = None;
     for src in &srcs {
         let src_path = std::path::PathBuf::from(src);
-        if mode == TransferMode::Move {
-            validate_move_pair(&src_path, &dst_path)?;
-        }
         let partial = build_plan(&src_path, &dst_path, &core_options).map_err(|e| e.to_string())?;
         match &mut plan {
             Some(acc) => acc.extend(partial),
@@ -826,23 +798,29 @@ mod tests {
     }
 
     #[test]
-    fn move_validation_rejects_same_and_contained_paths() {
+    fn build_plan_rejects_same_and_contained_paths() {
+        // P0.5: la validación vive en `build_plan` (core) y llega al frontend
+        // como `Err(String)`; ya no hay copia local en el crate.
         let tmp = tempfile::tempdir().unwrap();
         let a = tmp.path().join("a");
         let b = tmp.path().join("b");
         std::fs::create_dir_all(&a).unwrap();
         std::fs::create_dir_all(&b).unwrap();
+        let options = CopyOptions::default();
 
         // Mismo path.
-        assert!(validate_move_pair(&a, &a).is_err());
+        let err = build_plan(&a, &a, &options).unwrap_err().to_string();
+        assert!(err.contains("la misma ruta"), "{err}");
         // dst dentro de src.
         let inside = a.join("sub");
         std::fs::create_dir_all(&inside).unwrap();
-        assert!(validate_move_pair(&a, &inside).is_err());
+        let err = build_plan(&a, &inside, &options).unwrap_err().to_string();
+        assert!(err.contains("se contienen"), "{err}");
         // src dentro de dst.
-        assert!(validate_move_pair(&inside, &a).is_err());
+        let err = build_plan(&inside, &a, &options).unwrap_err().to_string();
+        assert!(err.contains("se contienen"), "{err}");
         // Rutas disjuntas: válido.
-        assert!(validate_move_pair(&a, &b).is_ok());
+        assert!(build_plan(&a, &b, &options).is_ok());
     }
 
     #[test]
