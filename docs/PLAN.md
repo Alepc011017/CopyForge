@@ -15,22 +15,24 @@
 - **P0.5** ✅ Hecho — `4e3a756` — Validación `src==dst` y contención mutua (H-4) en `build_plan`.
   - `scanner::validate_paths` compara **por componentes** tras `canonicalize_lossy`
     (tolera `dst` inexistente) y devuelve `CopyError::InvalidDestination`:
-    `src==dst` → "el origen y el destino son la misma ruta"; `dst⊂src` o `src⊂dst` →
+    `src==dst` → "el origen y el destino son la misma ruta"; `dst` dentro de `src` →
     "origen y destino se contienen mutuamente". `validate_effective_paths` queda como
     defensa en profundidad (destino efectivo == `src` o dentro de `src`).
   - Mensajes en español, con la misma redacción que mostraba `validate_move_pair` en la GUI.
   - `apps/gui-tauri`: se elimina `validate_move_pair` (duplicaba la regla); `start_transfer`
     propaga tal cual el error de `build_plan` (también en modo `copy`).
-  - Tests: `validate_rejects_same_src_dst`, `validate_rejects_dst_inside_src`,
-    `validate_rejects_src_inside_dst` (antes permitía) y
-    `build_plan_rejects_invalid_destination_pairs` en core (40); el equivalente del crate
-    Tauri pasa a llamar a `build_plan` (siguen 15). CLI verificado: los tres casos dan
-    `destino inválido: …` con exit 1 y sin tocar nada; la copia disjunta sigue OK.
-  - Trade-off documentado: al rechazar también `src⊂dst` se pierde `copy <ruta> --to <abuelo>`
-    (destino efectivo distinto de `src`) aunque no era peligroso; es la política que ya
-    aplicaba la GUI. Para relajarlo basta con dejar solo `dst.starts_with(src)` en
-    `validate_paths`: los casos realmente autodestructivos los cubre
-    `validate_effective_paths`.
+  - En la primera versión se rechazaba también `src` dentro de `dst` a nivel crudo; corregido
+    en **P0.5-fix** (`<hash-p0.5-fix>`), ver abajo.
+  - Tests en core (40) + el equivalente del crate Tauri (15) llamando a `build_plan`. CLI
+    verificado: los casos peligrosos dan `destino inválido: …` con exit 1 y sin tocar nada.
+- **P0.5-fix** ✅ Hecho — `<hash-p0.5-fix>` — No rechazar `src` dentro de `dst` a nivel crudo.
+  - Falso positivo: `copy /x/a/b --to /x` (nieto → abuelo) tiene destino efectivo `/x/b`,
+    distinto de `src`; solo colisiona cuando el efectivo acaba siendo `src` o cae dentro.
+  - `validate_paths` se queda con `src == dst` y `dst` dentro de `src` (recursión); el caso
+    `src⊂dst` con colisión (`src=/x/a/b` dir, `dst=/x/a` → efectivo `/x/a/b`) lo sigue
+    rechazando `validate_effective_paths`.
+  - Tests: `validate_allows_src_inside_dst`, `build_plan_rejects_same_and_dst_inside_src` y
+    `build_plan_allows_src_inside_dst_unless_effective_collides` (nieto OK + colisión KO).
 - **P0.6a** ✅ Hecho — `DurabilityPolicy { None, File, Full }` (default `File`; cambio documentado respecto al anterior equivalente a `None`): `apply_durability` con `sync_all` del temporal pre-rename para `File|Full`; `sync_parent_dir` post-rename solo en `Full` (Unix; Windows degrada a `File` con `warn` una sola vez por invocación vía `Arc<Once>` creado en `run()`). CLI `--durability <none|file|full>` (default `file`). 2 tests de contenido. Sin commitear todavía.
 - **P0.6b** ⏳ Pendiente (siguiente paso) — Test de integración: con `Full` en Unix, verificar que el directorio padre se sincroniza.
 - **P0.7** ✅ Hecho — Cap en `report.errors`: `CopyOptions.max_errors` (default 1000) + `Report.errors_truncated`; se conservan los primeros N, el resto solo cuenta. CLI imprime “N errores adicionales omitidos (total: M)”; GUI lo muestra junto a la lista. 2 tests + verificación real con 1005 fallos. Sin commitear todavía.

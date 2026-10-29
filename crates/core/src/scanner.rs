@@ -58,18 +58,14 @@ pub fn build_effective_dest(src: &Path, dst: &Path) -> std::io::Result<PathBuf> 
 /// - `src == dst` → `InvalidDestination("el origen y el destino son la misma ruta")`.
 /// - `dst` dentro de `src` → `InvalidDestination("origen y destino se contienen
 ///   mutuamente")` (recursión explosiva: el destino crecería mientras se copia).
-/// - `src` dentro de `dst` → mismo error: en `move` el borrado posterior puede
-///   llevarse por delante el destino si el plan sale vacío o parcial. Es la
-///   política que ya aplicaba la GUI (P4.6a) y que P0.5 centraliza aquí.
+/// - `src` dentro de `dst` **no es error aquí**: con basenames distintos el
+///   destino efectivo puede ser perfectamente válido (`copy /x/a/b --to /x` →
+///   `/x/b`). El caso que sí colisiona (efectivo == `src` o dentro de `src`) lo
+///   rechaza [`validate_effective_paths`], que se llama dentro de [`build_plan`]
+///   tras [`build_effective_dest`].
 ///
 /// La contención se compara **por componentes** (`Path::starts_with`), no por
 /// prefijo de cadena (`/a/bc` no está dentro de `/a/b`).
-///
-/// Diferencia con [`validate_effective_paths`]: esta función solo ve las
-/// rutas tal como las pasa el usuario (defensa temprana, antes de tocar IO).
-/// El caso `src=/a/b, dst=/a` lo cubre ya esta comprobación (contención); el
-/// chequeo del destino efectivo queda como defensa en profundidad para
-/// resoluciones que solo se conocen tras [`build_effective_dest`].
 ///
 /// Usa `canonicalize` cuando los paths existen (resuelve symlinks, `.`/`..`
 /// y rutas largas de Windows). Si un path no existe, canonaliza el ancestro
@@ -83,7 +79,7 @@ pub fn validate_paths(src: &Path, dst: &Path) -> Result<(), CopyError> {
             reason: "el origen y el destino son la misma ruta".into(),
         });
     }
-    if dst_c.starts_with(&src_c) || src_c.starts_with(&dst_c) {
+    if dst_c.starts_with(&src_c) {
         return Err(CopyError::InvalidDestination {
             reason: "origen y destino se contienen mutuamente".into(),
         });
@@ -479,28 +475,18 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_src_inside_dst() {
-        // Contención en el otro sentido (política de P0.5, la misma que
-        // aplicaba la GUI en `validate_move_pair`).
+    fn validate_allows_src_inside_dst() {
+        // P0.5-fix: a nivel crudo no es error; decide el destino efectivo.
         let tmp = tempfile::tempdir().unwrap();
         let dst = tmp.path().join("out");
         std::fs::create_dir(&dst).unwrap();
         let src = dst.join("inner");
         std::fs::create_dir(&src).unwrap();
-        let err = match validate_paths(&src, &dst) {
-            Ok(()) => panic!("expected InvalidDestination"),
-            Err(e) => e,
-        };
-        match err {
-            CopyError::InvalidDestination { reason } => {
-                assert!(reason.contains("se contienen"), "{reason}")
-            }
-            _ => panic!("expected InvalidDestination"),
-        }
+        assert!(validate_paths(&src, &dst).is_ok());
     }
 
     #[test]
-    fn build_plan_rejects_invalid_destination_pairs() {
+    fn build_plan_rejects_same_and_dst_inside_src() {
         // P0.5: la validación vive en `build_plan`, así CLI y GUI comparten
         // el mismo error (antes solo la GUI lo tenía, en `validate_move_pair`).
         let tmp = tempfile::tempdir().unwrap();
@@ -512,12 +498,8 @@ mod tests {
         let inside = src.join("sub");
         std::fs::create_dir(&inside).unwrap();
 
-        for (par, esperado) in [
-            ((&src, &src), "la misma ruta"),
-            ((&src, &inside), "se contienen"),
-            ((&inside, &src), "se contienen"),
-        ] {
-            match build_plan(par.0, par.1, &options) {
+        for (dst, esperado) in [(&src, "la misma ruta"), (&inside, "se contienen")] {
+            match build_plan(&src, dst, &options) {
                 Err(CopyError::InvalidDestination { reason }) => {
                     assert!(reason.contains(esperado), "{reason}")
                 }
@@ -530,15 +512,39 @@ mod tests {
     }
 
     #[test]
+    fn build_plan_allows_src_inside_dst_unless_effective_collides() {
+        // P0.5-fix: `src` dentro de `dst` no es error por sí mismo.
+        let tmp = tempfile::tempdir().unwrap();
+        let options = CopyOptions::default();
+        let abuelo = tmp.path().join("x");
+        let nieto = abuelo.join("a").join("b");
+        std::fs::create_dir_all(&nieto).unwrap();
+        write_file(&nieto.join("f.txt"));
+
+        // copy <nieto> --to <abuelo>: efectivo /x/b != src /x/a/b → válido.
+        assert!(validate_paths(&nieto, &abuelo).is_ok());
+        assert!(build_plan(&nieto, &abuelo, &options).is_ok());
+
+        // Mismo sentido pero con colisión: dst=/x/a y src dir /x/a/b →
+        // efectivo /x/a/b == src. Lo rechaza `validate_effective_paths`.
+        match build_plan(&nieto, &abuelo.join("a"), &options) {
+            Err(CopyError::InvalidDestination { reason }) => {
+                assert!(reason.contains("destino efectivo"), "{reason}")
+            }
+            otro => panic!("esperaba InvalidDestination, llegó {otro:?}"),
+        }
+    }
+
+    #[test]
     fn validate_effective_rejects_dir_into_parent() {
-        // src=/a/b, dst=/a: contención mutua; si la validación cruda no
-        // existiera, el efectivo (/a/b) sería el propio src.
+        // src=/a/b, dst=/a: el chequeo crudo ya no lo rechaza (P0.5-fix);
+        // el efectivo (/a/b) es el propio src y ahí salta el error.
         let tmp = tempfile::tempdir().unwrap();
         let parent = tmp.path().join("a");
         std::fs::create_dir(&parent).unwrap();
         let src = parent.join("b");
         std::fs::create_dir(&src).unwrap();
-        assert!(validate_paths(&src, &parent).is_err());
+        assert!(validate_paths(&src, &parent).is_ok());
         let err = match validate_effective_paths(&src, &parent) {
             Ok(()) => panic!("expected InvalidDestination"),
             Err(e) => e,

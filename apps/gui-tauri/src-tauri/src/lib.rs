@@ -816,9 +816,10 @@ mod tests {
         std::fs::create_dir_all(&inside).unwrap();
         let err = build_plan(&a, &inside, &options).unwrap_err().to_string();
         assert!(err.contains("se contienen"), "{err}");
-        // src dentro de dst.
+        // src dentro de dst con colisión efectiva (dir dentro de su padre):
+        // lo rechaza `validate_effective_paths` (el crudo ya no, P0.5-fix).
         let err = build_plan(&inside, &a, &options).unwrap_err().to_string();
-        assert!(err.contains("se contienen"), "{err}");
+        assert!(err.contains("destino efectivo"), "{err}");
         // Rutas disjuntas: válido.
         assert!(build_plan(&a, &b, &options).is_ok());
     }
