@@ -4,6 +4,8 @@ set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/nautilus-python/extensions"
+BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
+BIN_NAME="copyforge-gui-tauri"
 FILES=(copyforge_extension.py copyforge_ext_logic.py)
 
 usage() {
@@ -40,6 +42,77 @@ except ValueError:
 PY
 }
 
+binario_en_path() {
+    command -v copyforge-gui-tauri >/dev/null 2>&1 \
+        || command -v copyforge >/dev/null 2>&1 \
+        || command -v CopyForge >/dev/null 2>&1
+}
+
+enlazar_binario() {
+    local destino
+    destino="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+    mkdir -p "$BIN_DIR"
+    ln -sfn "$destino" "$BIN_DIR/$BIN_NAME"
+    echo "enlazado: $BIN_DIR/$BIN_NAME -> $destino"
+    case ":$PATH:" in
+        *":$BIN_DIR:"*) ;;
+        *)
+            echo "Aviso: $BIN_DIR no está en PATH; añádelo o exporta" \
+                 "COPYFORGE_GUI_BIN con la ruta al binario."
+            ;;
+    esac
+}
+
+# Asegura que la extensión encontrará el binario de la GUI: PATH, la propia
+# variable COPYFORGE_GUI_BIN o un enlace en ~/.local/bin.
+asegurar_binario() {
+    if binario_en_path; then
+        echo "binario: $(command -v copyforge-gui-tauri \
+            || command -v copyforge || command -v CopyForge)"
+        return 0
+    fi
+
+    if [ -n "${COPYFORGE_GUI_BIN:-}" ] && [ -x "${COPYFORGE_GUI_BIN}" ]; then
+        echo "binario: usando COPYFORGE_GUI_BIN=$COPYFORGE_GUI_BIN"
+        return 0
+    fi
+
+    local respuesta=""
+    if [ -t 0 ]; then
+        read -r -p "Ruta al binario de CopyForge (Enter = buscar automáticamente): " respuesta \
+            || respuesta=""
+    fi
+    respuesta="${respuesta/#\~/$HOME}"
+
+    if [ -n "$respuesta" ]; then
+        if [ -x "$respuesta" ]; then
+            enlazar_binario "$respuesta"
+        else
+            echo "Aviso: '$respuesta' no es un ejecutable; no se enlaza." >&2
+        fi
+        return 0
+    fi
+
+    local candidatos=(
+        "$SRC_DIR/../../apps/gui-tauri/src-tauri/target/release/$BIN_NAME"
+        "$SRC_DIR/../../target/release/$BIN_NAME"
+        "$HOME/.cargo/bin/$BIN_NAME"
+        "/usr/local/bin/$BIN_NAME"
+    )
+    local candidato
+    for candidato in "${candidatos[@]}"; do
+        if [ -x "$candidato" ]; then
+            enlazar_binario "$candidato"
+            return 0
+        fi
+    done
+
+    echo >&2
+    echo "Aviso: no se encontró el binario de CopyForge." >&2
+    echo "Instala el binario en PATH o exporta COPYFORGE_GUI_BIN antes de usar el menú." >&2
+    echo "(Se genera con: cd apps/gui-tauri && npm run tauri build)" >&2
+}
+
 case "${1:-}" in
     "")
         ;;
@@ -51,6 +124,10 @@ case "${1:-}" in
             fi
         done
         rm -rf "$DEST_DIR/__pycache__"
+        if [ -L "$BIN_DIR/$BIN_NAME" ]; then
+            rm -f "$BIN_DIR/$BIN_NAME"
+            echo "eliminado: $BIN_DIR/$BIN_NAME (enlace)"
+        fi
         echo
         echo "Reinicia Nautilus para descargar la extensión:  nautilus -q"
         exit 0
@@ -81,6 +158,8 @@ for f in "${FILES[@]}"; do
     }
 done
 
+asegurar_binario
+
 mkdir -p "$DEST_DIR"
 for f in "${FILES[@]}"; do
     install -m 0644 "$SRC_DIR/$f" "$DEST_DIR/$f"
@@ -95,5 +174,3 @@ if ! command -v zenity >/dev/null 2>&1; then
     echo "Aviso: zenity no está instalado; los errores solo irán a stderr y al log."
 fi
 echo "Reinicia Nautilus para cargar la extensión:  nautilus -q"
-echo "Asegúrate de que el binario de la GUI está en PATH o define COPYFORGE_GUI_BIN"
-echo "(ver README.md)."

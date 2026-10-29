@@ -51,7 +51,13 @@ cd integrations/nautilus
 nautilus -q           # reinicia Nautilus
 ```
 
-Si el binario no está en `PATH`, exporta su ruta **en el entorno de la sesión**
+`install.sh` también se ocupa del binario de la GUI: si no está en `PATH` ni en
+`COPYFORGE_GUI_BIN`, pregunta la ruta (o la autodetecta en
+`apps/gui-tauri/src-tauri/target/release/` y `~/.cargo/bin/`) y crea el enlace
+`~/.local/bin/copyforge-gui-tauri`, que sí está en `PATH`. Con eso Nautilus lo
+encuentra sin tocar el entorno de la sesión. `--uninstall` borra ese enlace.
+
+Si prefieres no usar el enlace, exporta la ruta **en el entorno de la sesión**
 (por ejemplo en `~/.profile` o `~/.config/environment.d/copyforge.conf`):
 
 ```bash
