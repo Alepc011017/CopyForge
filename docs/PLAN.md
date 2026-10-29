@@ -85,6 +85,7 @@
 - Un import no usado en `#[cfg(test)]` tumba el job (el CI compila los tests con `CARGO_BUILD_WARNINGS=deny`). Antes de cada commit, ejecutar `CARGO_BUILD_WARNINGS=deny cargo test --workspace --no-run` en local. Ojo: lo gateado por SO (`#[cfg(unix)]`) no se detecta en local; preferir tests portables y dejar el CI Windows como detector de lo específico.
 - Nota breaking P0.3/P0.4: `FileResult` es privado (sin break). `CopyEvent`/`Report` mantienen `String` (sin break en repo). Único break intencional: `#[non_exhaustive]` en `CopyError` — externos con `match` exhaustivo deberán añadir wildcard.
 - Detectado un bloque duplicado durante P1.6 (origen: edit propio de P1.6 en working tree, sin commitear; detectado y reparado en la misma sesión — ningún commit lo contuvo, verificado por conteo en `git show`). Era además error de sintaxis (`else` huérfano), así que `cargo check` lo habría rechazado igualmente. cargo check no detecta duplicados funcionales; conviene revisar diff manualmente cuando un paso grande añade bloques.
+- Si `git status` muestra modificaciones sin commitear en archivos ya commiteados, revisar `git diff` antes de verificar: auto-saves de editores pueden revertir cambios en curso (visto durante P4.6b).
 ### P3 — Tests y robustez
 - **P3.1** ⏳ Pendiente — `core/tests/`: plan (file/dir/exclude), overwrite `Never/IfNewer/IfDifferent`, verify `Size/Hash`, symlink Unix, cancel.
 - **P3.2** ⏳ Pendiente — Integración end-to-end + fixtures con limpieza.
@@ -302,6 +303,15 @@ el mismo motor Rust.
     - **V3 `validate_move_pair`**: `src==dst` ⇒ `"el origen y el destino son la misma
       ruta"`; `dst⊂src` y `src⊂dst` ⇒ `"origen y destino se contienen mutuamente"`;
       rutas disjuntas ⇒ `Ok`; no toca el disco.
+- **P4.6a-fix** ✅ Hecho — `eb04e0a` — Drenado al montar y mensaje propio para `src==dst`.
+  - El efecto de montaje registra los listeners **siempre**; solo el primer drenado queda
+    tras el guard `drainedRef`. Con el guard envolviendo todo el efecto, el segundo montaje
+    de StrictMode (setup → cleanup → setup) se saltaba el `listen("copy-request")` y las
+    tareas de instancias posteriores no llegaban a la UI (la 1.ª sí, vía `run(args)`).
+  - `validate_move_pair` canoniza **antes** de comprobar contención, para que `src==dst`
+    devuelva "el origen y el destino son la misma ruta" en vez del mensaje genérico.
+  - Verificado con V1 (2.ª instancia ⇒ `exit 0` en 0,107 s y tarea ejecutada por la 1.ª)
+    y V3 (los tres rechazos con su mensaje).
 - **P4.6b** ✅ Hecho — `7b3d961` — Extensión de Nautilus (`integrations/nautilus/`).
   - `copyforge_extension.py` (274 líneas; antes 685): menús planos de fondo
     (`Pegar con CopyForge` → `copy`/`move` según el portapapeles, `Mover aquí con CopyForge`)
